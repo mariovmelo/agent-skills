@@ -44,7 +44,6 @@
 | **Comando** | `gemini -m MODELO -p "prompt"` |
 | **Modelo Top** | `gemini-3-pro-preview` |
 | **Modelo Rapido** | `gemini-3-flash-preview` |
-| **Modelo Economico** | `gemini-2.5-flash` |
 | **Custo** | GRATUITO (tier generoso) |
 | **Contexto** | 1M tokens |
 | **Timeout** | Configuravel via Bash (ate 10min) |
@@ -69,8 +68,6 @@
 ### Modelos disponiveis (verificar com `gemini /model`)
 - `gemini-3-pro-preview` - Analises serias, arquitetura, decisoes
 - `gemini-3-flash-preview` - Rapido, bom custo-beneficio
-- `gemini-2.5-flash` - Apenas consultas triviais
-- `gemini-2.5-pro` - Estavel, GA
 
 ---
 
