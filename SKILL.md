@@ -31,6 +31,7 @@ Antes de executar QUALQUER chamada, classifique o cenario:
 - **[team-patterns.md](team-patterns.md)**: Carregue APENAS se a tarefa precisa de equipe (2+ IAs). Padroes sao sugestoes, NAO regras fixas.
 - **[calling-conventions.md](calling-conventions.md)**: Carregue APENAS antes de executar chamadas CLI. Contem comandos exatos, env vars, timeouts, parsing.
 - **[examples.md](examples.md)**: NAO carregue a menos que precise de inspiracao para cenario incomum.
+- **[privacy-tools.md](privacy-tools.md)**: Carregue APENAS em modo `sensitive`. Presidio (anonimizacao LGPD), structlog (auditoria), Rich (output), Pydantic (validacao de schema).
 
 ## FRAMEWORK DE PENSAMENTO
 
