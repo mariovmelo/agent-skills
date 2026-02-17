@@ -165,7 +165,7 @@ qwen -p "Explique o impacto de stale data na funcao X e quais modulos sao afetad
 Todos recebem o MESMO prompt, cada um da sua perspectiva:
   - Claude: Visao de negocio e ROI
   - Gemini Pro: Viabilidade tecnica e arquitetura
-  - Qwen: Complexidade de implementacao e alternativas
+  - Codex: Complexidade de implementacao e alternativas
 ```
 
 **Execucao**: PARALELO
