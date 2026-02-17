@@ -27,8 +27,6 @@ gemini -m gemini-3-flash-preview -p "@caminho/do/arquivo.txt"
 # Com output JSON
 gemini -m gemini-3-pro-preview --output-format json -p "prompt"
 
-# Modelo rapido para tarefas leves
-gemini -m gemini-2.5-flash -p "prompt"
 ```
 
 ### Via subprocess Python
