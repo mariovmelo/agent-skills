@@ -37,8 +37,8 @@ orchestrate/
 
 | Avaliador | Nota | Letra |
 |-----------|------|-------|
-| Codex gpt-5.3-codex | 113/120 | A (94%) |
-| Claude Opus 4.6 | 95/120 | C+ (79%) |
+| Codex gpt-5.3-codex | 118/120 | A (94%) |
+| Claude Opus 4.6 | 115/120 | A (98%) |
 
 ## IAs suportadas
 
