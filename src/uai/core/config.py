@@ -29,13 +29,84 @@ class ConfigManager:
     def load(self) -> ConfigSchema:
         if self._cache is not None:
             return self._cache
-        if not self.config_path.exists():
-            self._cache = ConfigSchema()
-            return self._cache
-        with self.config_path.open() as f:
-            raw = yaml.safe_load(f) or {}
-        self._cache = ConfigSchema.model_validate(raw)
+
+        # Layer 1: user config (~/.uai/config.yaml)
+        user_raw: dict = {}
+        if self.config_path.exists():
+            with self.config_path.open() as f:
+                user_raw = yaml.safe_load(f) or {}
+
+        # Layer 2: project config (.uai/config.yaml in cwd or parents)
+        project_raw: dict = {}
+        project_path = self._find_project_config()
+        if project_path and project_path != self.config_path:
+            with project_path.open() as f:
+                project_raw = yaml.safe_load(f) or {}
+
+        # Layer 3: environment variable overrides
+        env_raw: dict = self._load_env_overrides()
+
+        # Deep merge: user < project < env
+        merged = self._deep_merge(user_raw, project_raw)
+        merged = self._deep_merge(merged, env_raw)
+
+        self._cache = ConfigSchema.model_validate(merged) if merged else ConfigSchema()
         return self._cache
+
+    def _find_project_config(self) -> "Path | None":
+        """Walk up from cwd looking for .uai/config.yaml (project-level config)."""
+        import os
+        cwd = Path(os.getcwd())
+        home = Path.home()
+        for parent in [cwd, *cwd.parents]:
+            candidate = parent / ".uai" / "config.yaml"
+            if candidate.exists():
+                return candidate
+            if parent == home or parent == parent.parent:
+                break
+        return None
+
+    @staticmethod
+    def _load_env_overrides() -> dict:
+        """Map UAI_* environment variables to nested config dict paths."""
+        import os
+        mapping: dict[str, list[str]] = {
+            "UAI_DEFAULT_PROVIDER":  ["defaults", "provider"],
+            "UAI_COST_MODE":         ["defaults", "cost_mode"],
+            "UAI_DEFAULT_SESSION":   ["defaults", "session"],
+            "UAI_THEME":             ["ux", "theme"],
+            "UAI_STREAMING":         ["ux", "streaming"],
+            "UAI_TIMEOUT":           ["defaults", "timeout"],
+        }
+        overrides: dict = {}
+        for env_key, path in mapping.items():
+            val = os.environ.get(env_key)
+            if val is not None:
+                # Coerce bool strings
+                coerced: object = val
+                if val.lower() in ("true", "false"):
+                    coerced = val.lower() == "true"
+                else:
+                    try:
+                        coerced = int(val)
+                    except ValueError:
+                        pass
+                node = overrides
+                for part in path[:-1]:
+                    node = node.setdefault(part, {})
+                node[path[-1]] = coerced
+        return overrides
+
+    @staticmethod
+    def _deep_merge(base: dict, override: dict) -> dict:
+        """Recursively merge override into base (override wins on conflict)."""
+        result = dict(base)
+        for k, v in override.items():
+            if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+                result[k] = ConfigManager._deep_merge(result[k], v)
+            else:
+                result[k] = v
+        return result
 
     def save(self, schema: ConfigSchema) -> None:
         self._write(schema)

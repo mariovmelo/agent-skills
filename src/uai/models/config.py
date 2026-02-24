@@ -58,9 +58,23 @@ class QuotaAlertConfig(BaseModel):
     alert_threshold_percent: int = 80
 
 
+class UXConfig(BaseModel):
+    theme: str = "default"          # default | dark | minimal
+    streaming: bool = True          # enable streaming responses
+    spinner_style: str = "dots"     # dots | line | arc | bouncingBar
+
+
+class SessionConfig(BaseModel):
+    max_sessions: int = 50
+    max_age_days: int = 90
+    project_isolation: bool = False
+
+
 class ConfigSchema(BaseModel):
     version: int = 1
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
+    ux: UXConfig = Field(default_factory=UXConfig)
+    sessions: SessionConfig = Field(default_factory=SessionConfig)
     providers: dict[str, ProviderConfig] = Field(
         default_factory=lambda: {
             "gemini":   ProviderConfig(preferred_backend="cli",  priority=5),

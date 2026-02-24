@@ -151,6 +151,13 @@ class AuthManager:
     def _derive_key(self) -> bytes:
         """Derive a stable Fernet key from machine-specific data."""
         import hashlib
-        seed = f"uai-{os.getlogin()}-{Path.home()}".encode()
+        # os.getlogin() fails in headless/CI/Docker environments; use env fallback chain
+        username = (
+            os.environ.get("USER")
+            or os.environ.get("LOGNAME")
+            or os.environ.get("USERNAME")
+            or "uai-default"
+        )
+        seed = f"uai-{username}-{Path.home()}".encode()
         digest = hashlib.sha256(seed).digest()
         return base64.urlsafe_b64encode(digest)

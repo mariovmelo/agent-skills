@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import typer
 from rich.console import Console
-from rich.markdown import Markdown
 from rich import print as rprint
 
 console = Console()
@@ -35,11 +34,18 @@ async def _ask(
 ) -> None:
     from uai.core.executor import RequestExecutor
     from uai.models.request import UAIRequest
+    from uai.cli.input_expander import expand_input
+    from uai.cli.streaming import stream_to_live
 
     executor = RequestExecutor()
 
+    # Expand @file and !shell references in the prompt
+    expanded_prompt, warnings = await expand_input(prompt)
+    for w in warnings:
+        rprint(f"[yellow]Warning: {w}[/yellow]")
+
     request = UAIRequest(
-        prompt=prompt,
+        prompt=expanded_prompt,
         provider=provider,
         model=model,
         session_name=session,
@@ -51,19 +57,17 @@ async def _ask(
         rprint(f"[dim]Session: {session} | Free-only: {free} | Context: {not no_context}[/dim]")
 
     try:
-        response = await executor.execute(request)
+        if raw:
+            # Raw mode: print tokens directly without markdown rendering
+            async for token in executor.execute_stream(request):
+                typer.echo(token, nl=False)
+            typer.echo()
+        else:
+            await stream_to_live(executor.execute_stream(request), console)
     except Exception as e:
-        rprint(f"[red]Error: {e}[/red]")
+        from uai.core.errors import UAIError
+        if isinstance(e, UAIError):
+            rprint(e.rich_format())
+        else:
+            rprint(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
-
-    if verbose:
-        provider_tag = f"[cyan]{response.provider}[/cyan]/[dim]{response.model}[/dim]"
-        cost_tag = f"[green]free[/green]" if not response.cost_usd else f"${response.cost_usd:.4f}"
-        latency_tag = f"[dim]{response.latency_ms:.0f}ms[/dim]"
-        fallback_tag = f" [yellow](fallback: {', '.join(response.providers_tried)})[/yellow]" if response.fallback_used else ""
-        rprint(f"\n{provider_tag} {cost_tag} {latency_tag}{fallback_tag}\n")
-
-    if raw:
-        typer.echo(response.text)
-    else:
-        console.print(Markdown(response.text))

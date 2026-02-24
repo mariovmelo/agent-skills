@@ -16,6 +16,29 @@ _status_cache: dict[str, tuple[ProviderStatus, float]] = {}
 _cooldown_until: dict[str, float] = {}
 
 
+async def get_provider_status_with_age(
+    provider: "BaseProvider",
+) -> tuple[ProviderStatus, float | None]:
+    """
+    Return (status, age_seconds) where age_seconds is None if freshly checked.
+    Useful for showing cache staleness in status displays.
+    """
+    now = time.monotonic()
+    name = provider.name
+
+    if name in _cooldown_until and now < _cooldown_until[name]:
+        return ProviderStatus.COOLDOWN, None
+
+    if name in _status_cache:
+        status, ts = _status_cache[name]
+        age = now - ts
+        if age < _CACHE_TTL:
+            return status, age
+
+    status = await get_provider_status(provider)
+    return status, None
+
+
 async def get_provider_status(provider: "BaseProvider") -> ProviderStatus:
     """Return cached health status, refreshing if TTL expired."""
     now = time.monotonic()

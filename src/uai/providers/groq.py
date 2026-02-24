@@ -83,6 +83,49 @@ class GroqProvider(BaseProvider):
             latency_ms=latency,
         )
 
+    async def stream(
+        self,
+        prompt: str,
+        history: list[Message] | None = None,
+        model: str | None = None,
+    ):
+        """Stream tokens from Groq API (OpenAI-compatible streaming)."""
+        api_key = self._auth.get_credential("groq", "api_key")
+        if not api_key:
+            response = await self.send(prompt, history=history, model=model)
+            yield response.text
+            return
+
+        try:
+            from openai import AsyncOpenAI
+        except ImportError:
+            response = await self.send(prompt, history=history, model=model)
+            yield response.text
+            return
+
+        alias = model or self._cfg.default_model or self.DEFAULT_MODEL
+        model_id = self.MODELS.get(alias, {}).get("id", alias)
+        client = AsyncOpenAI(api_key=api_key, base_url=self.BASE_URL)
+
+        messages: list[dict[str, str]] = []
+        if history:
+            for msg in history:
+                if msg.role.value in ("user", "assistant"):
+                    messages.append({"role": msg.role.value, "content": msg.content})
+        messages.append({"role": "user", "content": prompt})
+
+        try:
+            stream = await client.chat.completions.create(
+                model=model_id, messages=messages, stream=True  # type: ignore[arg-type]
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if delta:
+                    yield delta
+        except Exception:
+            response = await self.send(prompt, history=history, model=model)
+            yield response.text
+
     async def health_check(self) -> ProviderStatus:
         if self._auth.get_credential("groq", "api_key"):
             return ProviderStatus.AVAILABLE

@@ -176,6 +176,49 @@ class ClaudeProvider(BaseProvider):
         return [{"alias": k, **v} for k, v in self.MODELS.items()]
 
     # ------------------------------------------------------------------
+    async def stream(
+        self,
+        prompt: str,
+        history: list[Message] | None = None,
+        model: str | None = None,
+    ):
+        """Stream tokens from Anthropic API. Falls back to CLI single-yield if no API key."""
+        api_key = self._auth.get_credential("claude", "api_key")
+        if not api_key:
+            response = await self.send(prompt, history=history, model=model)
+            yield response.text
+            return
+
+        try:
+            import anthropic as _anthropic
+        except ImportError:
+            response = await self.send(prompt, history=history, model=model)
+            yield response.text
+            return
+
+        model_id = self._resolve(model)
+        client = _anthropic.AsyncAnthropic(api_key=api_key)
+
+        messages: list[dict[str, str]] = []
+        if history:
+            for msg in history:
+                if msg.role.value in ("user", "assistant"):
+                    messages.append({"role": msg.role.value, "content": msg.content})
+        messages.append({"role": "user", "content": prompt})
+
+        try:
+            async with client.messages.stream(
+                model=model_id,
+                max_tokens=4096,
+                messages=messages,  # type: ignore[arg-type]
+            ) as stream:
+                async for text_chunk in stream.text_stream:
+                    yield text_chunk
+        except Exception:
+            response = await self._send_api(prompt, history, model, timeout=120)
+            yield response.text
+
+    # ------------------------------------------------------------------
     def _resolve(self, alias: str | None) -> str:
         alias = alias or self._cfg.default_model or self.DEFAULT_MODEL
         return self.MODELS.get(alias, {}).get("id", alias)

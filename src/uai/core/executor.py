@@ -137,6 +137,75 @@ class RequestExecutor:
         return prepared
 
     # ──────────────────────────────────────────────────────────────────
+    async def execute_stream(self, request: UAIRequest):
+        """
+        Like execute(), but yields tokens as they arrive via the provider's stream().
+
+        The full response is saved to the session context after streaming completes.
+        This is an async generator — use `async for token in executor.execute_stream(req)`.
+        """
+        session = self._context.get_session(request.session_name)
+
+        # Load project-level instructions (UAI.md / .uai/instructions.md)
+        instructions = None
+        try:
+            from uai.core.project_context import find_project_instructions
+            instructions = find_project_instructions()
+        except Exception:
+            pass
+
+        # Save user message to context
+        if request.use_context:
+            self._context.add_user_message(session, request.prompt)
+
+        # Prepare history
+        history: list[Message] | None = None
+        history_tokens = 0
+        if request.use_context:
+            history = await self._prepare_history(session, request)
+            if instructions and history is not None:
+                from uai.models.context import MessageRole, Message as _SysMsg
+                sys_msg = _SysMsg(
+                    id=-99,
+                    role=MessageRole.SYSTEM,
+                    content=f"[Project instructions]:\n{instructions}",
+                    tokens=self._context._estimate_tokens(instructions),
+                )
+                history = [sys_msg] + history
+            history_tokens = sum(m.tokens or 0 for m in history) if history else 0
+
+        # Route to best provider
+        decision = await self._router.route(
+            prompt=request.prompt,
+            task_type=request.task_type,
+            prefer_provider=request.provider,
+            free_only=request.free_only,
+            history_tokens=history_tokens,
+        )
+
+        provider = self._providers.get(decision.provider)
+        if provider is None:
+            provider = next(iter(self._providers.values()), None)
+        if provider is None:
+            from uai.core.errors import NoProviderAvailableError
+            raise NoProviderAvailableError()
+
+        # Stream tokens and accumulate
+        full_text = ""
+        async for token in provider.stream(request.prompt, history=history):
+            full_text += token
+            yield token
+
+        # Save complete response to context
+        if request.use_context and full_text:
+            self._context.add_assistant_message(
+                session,
+                content=full_text,
+                provider=provider.name,
+                model=decision.model or "",
+            )
+
+    # ──────────────────────────────────────────────────────────────────
     # Convenience accessors used by CLI commands
     # ──────────────────────────────────────────────────────────────────
 

@@ -172,6 +172,54 @@ class GeminiProvider(BaseProvider):
         return [{"alias": k, **v} for k, v in self.MODELS.items()]
 
     # ------------------------------------------------------------------
+    async def stream(
+        self,
+        prompt: str,
+        history: list[Message] | None = None,
+        model: str | None = None,
+    ):
+        """Stream tokens from Gemini API. Falls back to CLI single-yield if no API key."""
+        from typing import AsyncIterator
+        api_key = self._auth.get_credential("gemini", "api_key")
+        if not api_key:
+            # CLI fallback: single yield (can't stream subprocess output)
+            response = await self.send(prompt, history=history, model=model)
+            yield response.text
+            return
+
+        try:
+            from google import genai
+            from google.genai import types
+        except ImportError:
+            response = await self.send(prompt, history=history, model=model)
+            yield response.text
+            return
+
+        model_id = self._resolve(model)
+        client = genai.Client(api_key=api_key)
+
+        contents: list[Any] = []
+        if history:
+            for msg in history:
+                role = "user" if msg.role.value == "user" else "model"
+                contents.append(types.Content(role=role, parts=[types.Part(text=msg.content)]))
+        contents.append(types.Content(role="user", parts=[types.Part(text=prompt)]))
+
+        try:
+            stream_iter = await asyncio.to_thread(
+                lambda: list(client.models.generate_content_stream(
+                    model=model_id, contents=contents
+                ))
+            )
+            for chunk in stream_iter:
+                if chunk.text:
+                    yield chunk.text
+        except Exception:
+            # Fallback to non-streaming on error
+            response = await self._send_api(prompt, history, model, timeout=120, output_json=False)
+            yield response.text
+
+    # ------------------------------------------------------------------
     def _resolve(self, alias: str | None) -> str:
         alias = alias or self._cfg.default_model or self.DEFAULT_MODEL
         return self.MODELS.get(alias, {}).get("id", alias)

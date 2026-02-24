@@ -50,8 +50,9 @@ class ContextManager:
         return Session(name=name, db_path=str(db_path))
 
     def list_sessions(self) -> list[SessionInfo]:
+        """Return sessions sorted by last_active descending (most recent first)."""
         infos: list[SessionInfo] = []
-        for db_file in sorted(self._dir.glob("*.db")):
+        for db_file in self._dir.glob("*.db"):
             name = db_file.stem
             try:
                 conn = sqlite3.connect(db_file)
@@ -70,6 +71,8 @@ class ContextManager:
                 ))
             except Exception:
                 continue
+        # Sort most recent first so list_sessions()[0] is the last active session
+        infos.sort(key=lambda s: s.last_active, reverse=True)
         return infos
 
     def delete_session(self, name: str) -> None:
@@ -224,6 +227,36 @@ class ContextManager:
     # ──────────────────────────────────────────────────────────────────
     # Export
     # ──────────────────────────────────────────────────────────────────
+
+    def cleanup_old_sessions(
+        self,
+        max_count: int = 50,
+        max_age_days: int = 90,
+    ) -> int:
+        """
+        Remove sessions older than max_age_days or beyond max_count (keep newest).
+        Returns number of sessions deleted.
+        """
+        from datetime import timedelta
+        sessions = self.list_sessions()
+        deleted = 0
+        cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+
+        # Delete by age first
+        for s in sessions:
+            if s.last_active < cutoff:
+                self.delete_session(s.name)
+                deleted += 1
+
+        # Then enforce max_count (keep newest)
+        remaining = self.list_sessions()
+        # list_sessions returns sorted by file mtime; re-sort by last_active descending
+        remaining_sorted = sorted(remaining, key=lambda s: s.last_active, reverse=True)
+        for s in remaining_sorted[max_count:]:
+            self.delete_session(s.name)
+            deleted += 1
+
+        return deleted
 
     def export_session(self, session: Session, fmt: Literal["json", "markdown"] = "markdown") -> str:
         messages = self.get_messages(session)

@@ -50,6 +50,18 @@ async def _status(verbose: bool) -> None:
 
     console.print(table)
 
+    # Show project-level config and UAI.md status
+    try:
+        from uai.core.project_context import find_project_instructions, find_project_config
+        instructions = find_project_instructions()
+        project_cfg = find_project_config()
+        if instructions:
+            rprint(f"[dim]Project instructions: [cyan]UAI.md[/cyan] loaded ({len(instructions)} chars)[/dim]")
+        if project_cfg:
+            rprint(f"[dim]Project config: [cyan]{project_cfg}[/cyan][/dim]")
+    except Exception:
+        pass
+
     total_cost = executor.quota.total_cost_month()
     if total_cost > 0:
         rprint(f"\n[dim]Total cost this month: [yellow]${total_cost:.4f}[/yellow][/dim]")

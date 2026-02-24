@@ -14,6 +14,7 @@ def chat(
     provider: str = typer.Option(None, "--provider", "-p", help="Force a specific provider"),
     free: bool = typer.Option(False, "--free", help="Use only free providers"),
     new: bool = typer.Option(False, "--new", help="Start a fresh session (clears history)"),
+    resume: bool = typer.Option(False, "--resume", "-r", help="Resume the most recent session"),
 ) -> None:
     """
     Start an interactive chat session with persistent context.
@@ -21,7 +22,7 @@ def chat(
     Your conversation is saved across sessions. Switch providers mid-chat
     with /provider <name>. Type /help for all commands.
     """
-    asyncio.run(_chat(session, provider, free, new))
+    asyncio.run(_chat(session, provider, free, new, resume))
 
 
 async def _chat(
@@ -29,11 +30,24 @@ async def _chat(
     forced_provider: str | None,
     free: bool,
     new: bool,
+    resume: bool,
 ) -> None:
     from uai.core.executor import RequestExecutor
     from uai.models.request import UAIRequest
+    from uai.cli.slash_commands import build_default_registry, ChatContext
+    from uai.cli.streaming import stream_to_live
+    from uai.cli.input_handler import make_prompt_session, get_user_input
+    from uai.cli.input_expander import expand_input
 
     executor = RequestExecutor()
+
+    # --resume: find most recent session
+    if resume:
+        sessions = executor.context.list_sessions()
+        if sessions:
+            session_name = sessions[0].name
+            rprint(f"[dim]Resuming session: [yellow]{session_name}[/yellow][/dim]")
+
     session = executor.context.get_session(session_name)
 
     if new:
@@ -46,29 +60,50 @@ async def _chat(
 
     current_provider = forced_provider
 
+    # Setup slash command registry
+    registry = build_default_registry()
+    ctx = ChatContext(
+        session_name=session_name,
+        executor=executor,
+        session=session,
+        console=console,
+        current_provider=current_provider,
+    )
+
+    # Setup prompt_toolkit session
+    history_path = executor.config.config_dir / "chat_history"
+    pt_session = make_prompt_session(history_path, extra_commands=registry.all_names())
+
     while True:
         try:
-            user_input = typer.prompt("You", prompt_suffix="> ")
+            provider_label = current_provider or "auto"
+            user_input = await get_user_input(pt_session, provider_label)
         except (KeyboardInterrupt, EOFError):
             rprint("\n[dim]Goodbye![/dim]")
             break
 
-        user_input = user_input.strip()
         if not user_input:
             continue
 
-        # Handle slash commands
+        # Handle slash commands via registry
         if user_input.startswith("/"):
-            handled = _handle_slash(user_input, session_name, executor, session)
-            if handled == "exit":
+            ctx.current_provider = current_provider
+            result = await registry.dispatch(user_input, ctx)
+            if result == "exit":
                 break
-            if handled and handled.startswith("provider:"):
-                current_provider = handled.split(":", 1)[1] or None
+            if result and result.startswith("provider:"):
+                current_provider = result.split(":", 1)[1] or None
+                ctx.current_provider = current_provider
             continue
 
-        # Execute request
+        # Expand @file and !shell references
+        expanded_prompt, warnings = await expand_input(user_input)
+        for w in warnings:
+            rprint(f"[yellow]Warning: {w}[/yellow]")
+
+        # Execute request with streaming
         request = UAIRequest(
-            prompt=user_input,
+            prompt=expanded_prompt,
             provider=current_provider,
             session_name=session_name,
             free_only=free,
@@ -76,79 +111,18 @@ async def _chat(
         )
 
         try:
-            response = await executor.execute(request)
+            # Show provider label before streaming starts
+            provider_label_str = f"[cyan]{current_provider or 'auto'}[/cyan]"
+            rprint(f"\n{provider_label_str}")
+            full_text = await stream_to_live(
+                executor.execute_stream(request),
+                console,
+            )
+            rprint()
         except Exception as e:
-            rprint(f"[red]Error: {e}[/red]")
+            from uai.core.errors import UAIError
+            if isinstance(e, UAIError):
+                rprint(e.rich_format())
+            else:
+                rprint(f"[red]Error: {e}[/red]")
             continue
-
-        # Show provider info
-        tag = f"[cyan]{response.provider}[/cyan]/[dim]{response.model}[/dim]"
-        fallback = f" [yellow]→ fallback from {response.providers_tried[0]}[/yellow]" if response.fallback_used else ""
-        rprint(f"\n{tag}{fallback}")
-        console.print(Markdown(response.text))
-        rprint()
-
-
-def _handle_slash(cmd: str, session_name: str, executor, session) -> str | None:
-    parts = cmd.split(maxsplit=1)
-    command = parts[0].lower()
-    arg = parts[1] if len(parts) > 1 else ""
-
-    if command in ("/exit", "/quit", "/q"):
-        rprint("[dim]Goodbye![/dim]")
-        return "exit"
-
-    if command == "/help":
-        rprint("""
-[bold]Available commands:[/bold]
-  /provider <name>   Switch provider (gemini, claude, qwen, codex, ollama...)
-  /provider          Reset to auto-routing
-  /clear             Clear session history
-  /history           Show message count
-  /export            Export session as markdown
-  /status            Show provider status
-  /exit              Exit chat
-""")
-        return "handled"
-
-    if command == "/provider":
-        if arg:
-            rprint(f"[dim]Switched to provider: [cyan]{arg}[/cyan][/dim]")
-            return f"provider:{arg}"
-        else:
-            rprint("[dim]Reset to auto-routing.[/dim]")
-            return "provider:"
-
-    if command == "/clear":
-        executor.context.clear_messages(session)
-        rprint("[dim]Session history cleared.[/dim]")
-        return "handled"
-
-    if command == "/history":
-        msgs = executor.context.get_messages(session)
-        rprint(f"[dim]{len(msgs)} messages in session '{session_name}'.[/dim]")
-        return "handled"
-
-    if command == "/export":
-        content = executor.context.export_session(session, fmt="markdown")
-        filename = f"{session_name}.md"
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(content)
-        rprint(f"[green]✓ Exported to {filename}[/green]")
-        return "handled"
-
-    if command == "/status":
-        from uai.models.provider import ProviderStatus
-        import asyncio as _asyncio
-        rprint("[bold]Provider status:[/bold]")
-        for name, prov in executor.providers.items():
-            try:
-                st = _asyncio.run(prov.health_check())
-            except Exception:
-                st = ProviderStatus.UNAVAILABLE
-            color = "green" if st == ProviderStatus.AVAILABLE else "red"
-            rprint(f"  [{color}]{name}[/{color}]: {st.value}")
-        return "handled"
-
-    rprint(f"[yellow]Unknown command: {cmd}. Type /help for available commands.[/yellow]")
-    return "handled"

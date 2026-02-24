@@ -149,6 +149,49 @@ class QwenProvider(BaseProvider):
         )
 
     # ------------------------------------------------------------------
+    async def stream(
+        self,
+        prompt: str,
+        history: list[Message] | None = None,
+        model: str | None = None,
+    ):
+        """Stream tokens via OpenRouter API. CLI fallback = single yield (subprocess)."""
+        api_key = self._auth.get_credential("qwen", "openrouter_key")
+        if not api_key:
+            # CLI path: cannot stream subprocess output incrementally
+            response = await self.send(prompt, history=history, model=model)
+            yield response.text
+            return
+
+        try:
+            from openai import AsyncOpenAI
+        except ImportError:
+            response = await self.send(prompt, history=history, model=model)
+            yield response.text
+            return
+
+        model_id = self._resolve(model)
+        client = AsyncOpenAI(base_url=self.OPENROUTER_BASE, api_key=api_key)
+
+        messages: list[dict[str, str]] = []
+        if history:
+            for msg in history:
+                messages.append({"role": msg.role.value, "content": msg.content})
+        messages.append({"role": "user", "content": prompt})
+
+        try:
+            stream = await client.chat.completions.create(
+                model=model_id, messages=messages, stream=True  # type: ignore[arg-type]
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if delta:
+                    yield delta
+        except Exception:
+            response = await self.send(prompt, history=history, model=model)
+            yield response.text
+
+    # ------------------------------------------------------------------
     async def health_check(self) -> ProviderStatus:
         from uai.utils.installer import is_cli_installed
         if is_cli_installed("qwen"):

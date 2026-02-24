@@ -48,4 +48,7 @@ app.add_typer(providers_app, name="providers")
 
 
 def main() -> None:
+    import os
+    from uai.utils.logging import configure_logging
+    configure_logging(os.environ.get("UAI_LOG_LEVEL", "WARNING"))
     app()
