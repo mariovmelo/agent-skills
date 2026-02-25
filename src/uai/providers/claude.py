@@ -7,11 +7,11 @@ from typing import Any
 from uai.models.context import Message
 from uai.models.provider import BackendType, ProviderStatus, TaskCapability
 from uai.providers.base import (
-    AuthError, BaseProvider, ProviderError, ProviderResponse, RateLimitError,
+    APIProviderMixin, AuthError, ProviderError, ProviderResponse, RateLimitError,
 )
 
 
-class ClaudeProvider(BaseProvider):
+class ClaudeProvider(APIProviderMixin):
     name = "claude"
     display_name = "Claude"
     is_free = False
@@ -65,16 +65,9 @@ class ClaudeProvider(BaseProvider):
         except ImportError:
             raise ProviderError("anthropic not installed. Run: pip install anthropic")
 
-        model_id = self._resolve(model)
+        model_id = self._resolve_model_alias(model)
         client = anthropic.AsyncAnthropic(api_key=api_key)
-
-        # Build message array with history
-        messages: list[dict[str, str]] = []
-        if history:
-            for msg in history:
-                if msg.role.value in ("user", "assistant"):
-                    messages.append({"role": msg.role.value, "content": msg.content})
-        messages.append({"role": "user", "content": prompt})
+        messages = self._build_openai_history(history, prompt)
 
         t0 = time.monotonic()
         try:
@@ -122,7 +115,7 @@ class ClaudeProvider(BaseProvider):
     ) -> ProviderResponse:
         """Use claude -p in headless mode."""
         full_prompt = self._build_prompt(prompt, history)
-        model_id = self._resolve(model)
+        model_id = self._resolve_model_alias(model)
         cmd = ["claude", "-p", full_prompt, "--model", model_id]
 
         t0 = time.monotonic()
@@ -196,15 +189,9 @@ class ClaudeProvider(BaseProvider):
             yield response.text
             return
 
-        model_id = self._resolve(model)
+        model_id = self._resolve_model_alias(model)
         client = _anthropic.AsyncAnthropic(api_key=api_key)
-
-        messages: list[dict[str, str]] = []
-        if history:
-            for msg in history:
-                if msg.role.value in ("user", "assistant"):
-                    messages.append({"role": msg.role.value, "content": msg.content})
-        messages.append({"role": "user", "content": prompt})
+        messages = self._build_openai_history(history, prompt)
 
         try:
             async with client.messages.stream(
@@ -217,11 +204,6 @@ class ClaudeProvider(BaseProvider):
         except Exception:
             response = await self._send_api(prompt, history, model, timeout=120)
             yield response.text
-
-    # ------------------------------------------------------------------
-    def _resolve(self, alias: str | None) -> str:
-        alias = alias or self._cfg.default_model or self.DEFAULT_MODEL
-        return self.MODELS.get(alias, {}).get("id", alias)
 
     def _build_prompt(self, prompt: str, history: list[Message] | None) -> str:
         if not history:

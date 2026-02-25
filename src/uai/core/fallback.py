@@ -33,7 +33,7 @@ class FallbackChain:
     def __init__(
         self,
         providers: dict[str, BaseProvider],
-        quota: QuotaTracker,
+        quota: QuotaTracker | None = None,
     ) -> None:
         self._providers = providers
         self._quota = quota
@@ -125,13 +125,15 @@ class FallbackChain:
         success: bool,
         error: str | None = None,
     ) -> None:
+        if self._quota is None:
+            return
         self._quota.record(UsageRecord(
             provider=provider,
             model=response.model if response else "",
             backend=response.backend.value if response else "unknown",
-            tokens_input=response.tokens_input or 0,
-            tokens_output=response.tokens_output or 0,
-            cost_usd=response.cost_usd or 0.0,
+            tokens_input=response.tokens_input or 0 if response else 0,
+            tokens_output=response.tokens_output or 0 if response else 0,
+            cost_usd=response.cost_usd or 0.0 if response else 0.0,
             latency_ms=response.latency_ms if response else 0.0,
             success=success,
             error=error,

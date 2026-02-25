@@ -37,7 +37,7 @@ async def _ask(
     from uai.cli.input_expander import expand_input
     from uai.cli.streaming import stream_to_live
 
-    executor = RequestExecutor()
+    executor = RequestExecutor.create_default()
 
     # Expand @file and !shell references in the prompt
     expanded_prompt, warnings = await expand_input(prompt)

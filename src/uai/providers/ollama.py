@@ -6,10 +6,10 @@ from typing import Any
 
 from uai.models.context import Message
 from uai.models.provider import BackendType, ProviderStatus, TaskCapability
-from uai.providers.base import BaseProvider, ProviderError, ProviderResponse
+from uai.providers.base import APIProviderMixin, ProviderError, ProviderResponse
 
 
-class OllamaProvider(BaseProvider):
+class OllamaProvider(APIProviderMixin):
     name = "ollama"
     display_name = "Ollama (local)"
     is_free = True

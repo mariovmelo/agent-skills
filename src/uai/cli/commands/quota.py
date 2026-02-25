@@ -12,7 +12,7 @@ def quota() -> None:
     """Show quota usage, costs, and rate limits across all providers."""
     from uai.core.executor import RequestExecutor
 
-    executor = RequestExecutor()
+    executor = RequestExecutor.create_default()
     cfg = executor.config.load()
     snapshots = executor.quota.get_all_snapshots(cfg.providers)
 

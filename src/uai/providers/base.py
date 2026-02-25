@@ -130,3 +130,35 @@ class BaseProvider(ABC):
     def resolve_model(self, model_alias: str | None) -> str:
         """Map a short alias ('flash', 'pro') to a full model ID."""
         return model_alias or ""
+
+
+class APIProviderMixin(BaseProvider):
+    """
+    Mixin for API-based providers with an OpenAI-compatible message format.
+
+    Provides helpers for history formatting and model resolution that are
+    duplicated across claude, groq, deepseek, ollama, and qwen providers.
+    """
+
+    # Subclasses must define these at class level
+    MODELS: dict[str, dict] = {}
+    DEFAULT_MODEL: str = ""
+
+    def _build_openai_history(
+        self,
+        history: list[Message] | None,
+        prompt: str,
+    ) -> list[dict[str, str]]:
+        """Build an OpenAI-compatible messages list from conversation history."""
+        messages: list[dict[str, str]] = []
+        if history:
+            for msg in history:
+                if msg.role.value in ("user", "assistant"):
+                    messages.append({"role": msg.role.value, "content": msg.content})
+        messages.append({"role": "user", "content": prompt})
+        return messages
+
+    def _resolve_model_alias(self, alias: str | None) -> str:
+        """Map a short model alias to the full model ID via MODELS dict."""
+        resolved = alias or getattr(self._cfg, "default_model", None) or self.DEFAULT_MODEL
+        return self.MODELS.get(resolved, {}).get("id", resolved)  # type: ignore[attr-defined]

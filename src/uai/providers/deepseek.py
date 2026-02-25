@@ -6,10 +6,10 @@ from typing import Any
 
 from uai.models.context import Message
 from uai.models.provider import BackendType, ProviderStatus, TaskCapability
-from uai.providers.base import AuthError, BaseProvider, ProviderError, ProviderResponse
+from uai.providers.base import APIProviderMixin, AuthError, ProviderError, ProviderResponse
 
 
-class DeepSeekProvider(BaseProvider):
+class DeepSeekProvider(APIProviderMixin):
     name = "deepseek"
     display_name = "DeepSeek"
     is_free = False   # Has free tier but with limits; cost is negligible
@@ -48,16 +48,9 @@ class DeepSeekProvider(BaseProvider):
         except ImportError:
             raise ProviderError("openai not installed. Run: pip install openai")
 
-        alias = model or self._cfg.default_model or self.DEFAULT_MODEL
-        model_id = self.MODELS.get(alias, {}).get("id", alias)
+        model_id = self._resolve_model_alias(model)
         client = AsyncOpenAI(api_key=api_key, base_url=self.BASE_URL)
-
-        messages: list[dict[str, str]] = []
-        if history:
-            for msg in history:
-                if msg.role.value in ("user", "assistant"):
-                    messages.append({"role": msg.role.value, "content": msg.content})
-        messages.append({"role": "user", "content": prompt})
+        messages = self._build_openai_history(history, prompt)
 
         t0 = time.monotonic()
         try:
@@ -71,6 +64,7 @@ class DeepSeekProvider(BaseProvider):
         latency = (time.monotonic() - t0) * 1000
         text = response.choices[0].message.content or ""
         usage = response.usage
+        alias = model or self._cfg.default_model or self.DEFAULT_MODEL
         info = self.MODELS.get(alias, self.MODELS[self.DEFAULT_MODEL])
         cost = 0.0
         if usage:
@@ -110,16 +104,9 @@ class DeepSeekProvider(BaseProvider):
             yield response.text
             return
 
-        alias = model or self._cfg.default_model or self.DEFAULT_MODEL
-        model_id = self.MODELS.get(alias, {}).get("id", alias)
+        model_id = self._resolve_model_alias(model)
         client = AsyncOpenAI(api_key=api_key, base_url=self.BASE_URL)
-
-        messages: list[dict[str, str]] = []
-        if history:
-            for msg in history:
-                if msg.role.value in ("user", "assistant"):
-                    messages.append({"role": msg.role.value, "content": msg.content})
-        messages.append({"role": "user", "content": prompt})
+        messages = self._build_openai_history(history, prompt)
 
         try:
             stream = await client.chat.completions.create(

@@ -39,7 +39,7 @@ async def _chat(
     from uai.cli.input_handler import make_prompt_session, get_user_input
     from uai.cli.input_expander import expand_input
 
-    executor = RequestExecutor()
+    executor = RequestExecutor.create_default()
 
     # --resume: find most recent session
     if resume:

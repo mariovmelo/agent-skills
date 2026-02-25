@@ -2,8 +2,11 @@
 from __future__ import annotations
 import pytest
 import tempfile
+from io import StringIO
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
+
+from rich.console import Console
 
 from uai.core.auth import AuthManager
 from uai.core.config import ConfigManager
@@ -48,6 +51,27 @@ def free_provider_cfg():
 @pytest.fixture
 def paid_provider_cfg():
     return ProviderConfig(enabled=True, preferred_backend="api", priority=2)
+
+
+@pytest.fixture
+def mock_console():
+    """Rich Console that writes to a StringIO buffer, for output assertions."""
+    buf = StringIO()
+    return Console(file=buf, highlight=False, markup=False), buf
+
+
+@pytest.fixture
+def tmp_project_dir(tmp_path):
+    """A fresh temporary directory to simulate a project root."""
+    proj = tmp_path / "project"
+    proj.mkdir()
+    return proj
+
+
+@pytest.fixture
+def mock_provider_fixture():
+    """A mock provider as a pytest fixture (same as make_mock_provider())."""
+    return make_mock_provider()
 
 
 def make_mock_provider(name="gemini", is_free=True, response_text="test response"):

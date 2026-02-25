@@ -70,6 +70,10 @@ class SessionConfig(BaseModel):
     project_isolation: bool = False
 
 
+# Backward-compat alias
+QuotaConfig = QuotaAlertConfig
+
+
 class ConfigSchema(BaseModel):
     version: int = 1
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)

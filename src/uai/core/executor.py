@@ -27,31 +27,50 @@ from uai.providers.base import BaseProvider
 
 
 class RequestExecutor:
-    def __init__(self, config_dir: Path | None = None) -> None:
-        self._config = ConfigManager(config_dir)
-        self._config.initialize()
+    def __init__(
+        self,
+        config: ConfigManager,
+        auth: AuthManager,
+        quota: QuotaTracker,
+        context: ContextManager,
+        router: RouterEngine,
+        fallback: FallbackChain,
+        providers: dict[str, BaseProvider],
+    ) -> None:
+        """Accept pre-built components. Use create_default() for normal usage."""
+        self._config = config
+        self._auth = auth
+        self._quota = quota
+        self._context = context
+        self._router = router
+        self._fallback = fallback
+        self._providers = providers
 
-        cfg = self._config.load()
-        self._auth = AuthManager(self._config.config_dir)
-        self._quota = QuotaTracker(self._config.config_dir / "quota.db")
-        self._context = ContextManager(self._config.config_dir / "sessions")
-        self._router = RouterEngine(self._config, self._auth, self._quota)
+    @classmethod
+    def create_default(cls, config_dir: Path | None = None) -> "RequestExecutor":
+        """Build a fully wired RequestExecutor from scratch (normal usage)."""
+        config = ConfigManager(config_dir)
+        config.initialize()
 
-        self._providers: dict[str, BaseProvider] = self._init_providers()
-        self._fallback = FallbackChain(self._providers, self._quota)
+        auth = AuthManager(config.config_dir)
+        quota = QuotaTracker(config.config_dir / "quota.db")
+        context = ContextManager(config.config_dir / "sessions")
+        router = RouterEngine(config, auth, quota)
 
-    def _init_providers(self) -> dict[str, BaseProvider]:
-        cfg = self._config.load()
+        cfg = config.load()
         providers: dict[str, BaseProvider] = {}
         for name, prov_cfg in cfg.providers.items():
             if not prov_cfg.enabled:
                 continue
             try:
-                cls = get_provider_class(name)
-                providers[name] = cls(self._auth, prov_cfg)
+                from uai.providers import get_provider_class
+                cls_p = get_provider_class(name)
+                providers[name] = cls_p(auth, prov_cfg)
             except Exception:
-                pass  # Provider module not available or import error
-        return providers
+                pass
+
+        fallback = FallbackChain(providers, quota)
+        return cls(config, auth, quota, context, router, fallback, providers)
 
     # ──────────────────────────────────────────────────────────────────
     async def execute(self, request: UAIRequest) -> UAIResponse:
@@ -62,20 +81,21 @@ class RequestExecutor:
         if request.use_context:
             self._context.add_user_message(session, request.prompt)
 
-        # 2. Load and prepare history
+        # 2. Load and prepare history (pass cfg to avoid re-loading)
         history: list[Message] | None = None
         history_tokens = 0
         if request.use_context:
-            history = await self._prepare_history(session, request)
+            history = await self._prepare_history(session, request, cfg)
             history_tokens = sum(m.tokens or 0 for m in history) if history else 0
 
-        # 3. Route to best provider
+        # 3. Route to best provider (pass cfg to avoid re-loading)
         decision = await self._router.route(
             prompt=request.prompt,
             task_type=request.task_type,
             prefer_provider=request.provider,
             free_only=request.free_only,
             history_tokens=history_tokens,
+            cfg=cfg,
         )
 
         # 4. Execute with fallback
@@ -109,9 +129,11 @@ class RequestExecutor:
             providers_tried=providers_tried,
         )
 
-    async def _prepare_history(self, session, request: UAIRequest) -> list[Message]:
+    async def _prepare_history(
+        self, session, request: UAIRequest, cfg=None
+    ) -> list[Message]:
         """Get history messages, excluding the most recent user message (just added)."""
-        cfg = self._config.load()
+        cfg = cfg or self._config.load()
         all_messages = self._context.get_messages(session)
         # Exclude the last message (which we just added)
         history = all_messages[:-1] if all_messages else []
@@ -144,6 +166,7 @@ class RequestExecutor:
         The full response is saved to the session context after streaming completes.
         This is an async generator — use `async for token in executor.execute_stream(req)`.
         """
+        cfg = self._config.load()  # Load once; passed to sub-calls to avoid re-parsing
         session = self._context.get_session(request.session_name)
 
         # Load project-level instructions (UAI.md / .uai/instructions.md)
@@ -158,11 +181,11 @@ class RequestExecutor:
         if request.use_context:
             self._context.add_user_message(session, request.prompt)
 
-        # Prepare history
+        # Prepare history (pass cfg to avoid re-loading)
         history: list[Message] | None = None
         history_tokens = 0
         if request.use_context:
-            history = await self._prepare_history(session, request)
+            history = await self._prepare_history(session, request, cfg)
             if instructions and history is not None:
                 from uai.models.context import MessageRole, Message as _SysMsg
                 sys_msg = _SysMsg(
@@ -174,13 +197,14 @@ class RequestExecutor:
                 history = [sys_msg] + history
             history_tokens = sum(m.tokens or 0 for m in history) if history else 0
 
-        # Route to best provider
+        # Route to best provider (pass cfg to avoid re-loading)
         decision = await self._router.route(
             prompt=request.prompt,
             task_type=request.task_type,
             prefer_provider=request.provider,
             free_only=request.free_only,
             history_tokens=history_tokens,
+            cfg=cfg,
         )
 
         provider = self._providers.get(decision.provider)

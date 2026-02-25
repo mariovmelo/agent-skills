@@ -12,7 +12,7 @@ def sessions_list() -> None:
     """List all saved conversation sessions."""
     from uai.core.executor import RequestExecutor
 
-    executor = RequestExecutor()
+    executor = RequestExecutor.create_default()
     sessions = executor.context.list_sessions()
 
     if not sessions:
@@ -49,7 +49,7 @@ def sessions_show(
     from uai.models.context import MessageRole
     from rich.markdown import Markdown
 
-    executor = RequestExecutor()
+    executor = RequestExecutor.create_default()
     session = executor.context.get_session(name)
     messages = executor.context.get_messages(session, limit=limit)
 
@@ -83,7 +83,7 @@ def sessions_delete(
             rprint("[dim]Aborted.[/dim]")
             return
 
-    executor = RequestExecutor()
+    executor = RequestExecutor.create_default()
     executor.context.delete_session(name)
     rprint(f"[green]✓ Session '{name}' deleted.[/green]")
 
@@ -96,7 +96,7 @@ def sessions_export(
     """Export a session as markdown or JSON."""
     from uai.core.executor import RequestExecutor
 
-    executor = RequestExecutor()
+    executor = RequestExecutor.create_default()
     session = executor.context.get_session(name)
 
     fmt = format.lower()

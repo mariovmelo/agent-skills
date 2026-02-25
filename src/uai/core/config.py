@@ -67,6 +67,20 @@ class ConfigManager:
         return None
 
     @staticmethod
+    def _coerce_value(val: str) -> object:
+        """Coerce a string to bool, int, float, or leave as str."""
+        if val.lower() in ("true", "false"):
+            return val.lower() == "true"
+        try:
+            return int(val)
+        except ValueError:
+            pass
+        try:
+            return float(val)
+        except ValueError:
+            return val
+
+    @staticmethod
     def _load_env_overrides() -> dict:
         """Map UAI_* environment variables to nested config dict paths."""
         import os
@@ -82,19 +96,10 @@ class ConfigManager:
         for env_key, path in mapping.items():
             val = os.environ.get(env_key)
             if val is not None:
-                # Coerce bool strings
-                coerced: object = val
-                if val.lower() in ("true", "false"):
-                    coerced = val.lower() == "true"
-                else:
-                    try:
-                        coerced = int(val)
-                    except ValueError:
-                        pass
                 node = overrides
                 for part in path[:-1]:
                     node = node.setdefault(part, {})
-                node[path[-1]] = coerced
+                node[path[-1]] = ConfigManager._coerce_value(val)
         return overrides
 
     @staticmethod
@@ -131,20 +136,7 @@ class ConfigManager:
         for part in parts[:-1]:
             node = node.setdefault(part, {})
 
-        # Attempt to coerce booleans and integers
-        coerced: object = value
-        if value.lower() in ("true", "false"):
-            coerced = value.lower() == "true"
-        else:
-            try:
-                coerced = int(value)
-            except ValueError:
-                try:
-                    coerced = float(value)
-                except ValueError:
-                    pass
-
-        node[parts[-1]] = coerced
+        node[parts[-1]] = self._coerce_value(value)
         updated = ConfigSchema.model_validate(raw)
         self.save(updated)
 

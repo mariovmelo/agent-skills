@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from uai.core.auth import AuthManager
 from uai.core.config import ConfigManager
 from uai.core.quota import QuotaTracker
+from uai.models.config import ConfigSchema
 from uai.models.provider import BackendType, ProviderStatus, TaskCapability
 from uai.providers import get_provider_class, list_providers
 from uai.utils.health import get_provider_status, mark_cooldown
@@ -56,8 +57,9 @@ class RouterEngine:
         prefer_provider: str | None = None,
         free_only: bool | None = None,
         history_tokens: int = 0,
+        cfg: ConfigSchema | None = None,
     ) -> RoutingDecision:
-        cfg = self._config.load()
+        cfg = cfg or self._config.load()
 
         # Override free_only from config if not explicitly set
         if free_only is None:

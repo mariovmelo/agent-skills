@@ -21,7 +21,7 @@ async def _status(verbose: bool) -> None:
     from uai.models.provider import ProviderStatus
     from uai.utils.installer import check_all_clis
 
-    executor = RequestExecutor()
+    executor = RequestExecutor.create_default()
     cfg = executor.config.load()
     cli_status = check_all_clis()
 

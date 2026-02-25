@@ -42,7 +42,7 @@ async def _code(
     else:
         task_type = TaskCapability.CODE_GENERATION
 
-    executor = RequestExecutor()
+    executor = RequestExecutor.create_default()
     request = UAIRequest(
         prompt=task,
         provider=provider,

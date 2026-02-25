@@ -107,3 +107,49 @@ async def test_prepare_context_windowed(context_mgr):
         session, mock_provider, strategy="windowed", keep_recent_turns=5
     )
     assert len(msgs) <= 10  # 5 turns * 2 messages
+
+
+# ── New tests for cleanup_old_sessions and list_sessions order ─────────────────
+
+import time as _time
+
+
+def test_list_sessions_sorted_most_recent_first(context_mgr):
+    """list_sessions() must return sessions sorted most-recently-active first."""
+    s1 = context_mgr.get_session("old-session")
+    context_mgr.add_user_message(s1, "old")
+    _time.sleep(0.05)
+
+    s2 = context_mgr.get_session("mid-session")
+    context_mgr.add_user_message(s2, "mid")
+    _time.sleep(0.05)
+
+    s3 = context_mgr.get_session("new-session")
+    context_mgr.add_user_message(s3, "new")
+
+    sessions = context_mgr.list_sessions()
+    names = [s.name for s in sessions]
+    assert names.index("new-session") < names.index("old-session")
+
+
+def test_cleanup_old_sessions_by_max_count(context_mgr):
+    """cleanup_old_sessions(max_count=2) with 3 sessions should leave 2."""
+    for name in ["s1", "s2", "s3"]:
+        s = context_mgr.get_session(name)
+        context_mgr.add_user_message(s, f"msg from {name}")
+        _time.sleep(0.03)
+
+    context_mgr.cleanup_old_sessions(max_count=2, max_age_days=999)
+    remaining = [s.name for s in context_mgr.list_sessions()]
+    assert len(remaining) == 2
+
+
+def test_cleanup_old_sessions_by_age(context_mgr):
+    """cleanup_old_sessions(max_age_days=0) should delete all sessions."""
+    for name in ["a", "b"]:
+        s = context_mgr.get_session(name)
+        context_mgr.add_user_message(s, "hello")
+
+    context_mgr.cleanup_old_sessions(max_count=9999, max_age_days=0)
+    remaining = context_mgr.list_sessions()
+    assert remaining == []
