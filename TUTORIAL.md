@@ -26,20 +26,29 @@
 ## 1. Pre-requisitos
 
 - **Python 3.11** ou superior
-- **pip** (gerenciador de pacotes Python)
+- **python3-venv** (para criar ambientes virtuais)
 - **Git**
+
+No Ubuntu/Debian, instale os pre-requisitos com:
+
+```bash
+sudo apt update
+sudo apt install python3 python3-venv python3-pip git
+```
 
 Verifique suas versoes:
 
 ```bash
 python3 --version   # deve ser >= 3.11
-pip --version
 git --version
 ```
 
 ---
 
 ## 2. Instalacao a partir do Git
+
+> **Nota para Ubuntu/Debian:** O Python do sistema e "externally managed" (PEP 668),
+> o que impede o uso direto de `pip install`. Sempre use um ambiente virtual.
 
 ### 2.1 Clonar o repositorio
 
@@ -48,15 +57,31 @@ git clone https://github.com/your-org/agent-skills.git
 cd agent-skills
 ```
 
-### 2.2 Instalar em modo editavel
+### 2.2 Criar e ativar o ambiente virtual
 
-O modo editavel (`-e`) permite que alteracoes no codigo fonte sejam refletidas imediatamente, sem precisar reinstalar:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+O prompt do terminal muda para `(.venv)` indicando que o ambiente esta ativo.
+
+Para desativar o ambiente virtual quando nao estiver usando:
+
+```bash
+deactivate
+```
+
+### 2.3 Instalar em modo editavel
+
+Com o ambiente virtual ativo, instale o projeto. O modo editavel (`-e`) faz com que
+alteracoes no codigo fonte sejam refletidas imediatamente, sem precisar reinstalar:
 
 ```bash
 pip install -e .
 ```
 
-### 2.3 (Opcional) Instalar com dependencias de desenvolvimento
+### 2.4 (Opcional) Instalar com dependencias de desenvolvimento
 
 Se voce pretende rodar testes ou contribuir com o projeto:
 
@@ -64,7 +89,7 @@ Se voce pretende rodar testes ou contribuir com o projeto:
 pip install -e ".[dev]"
 ```
 
-### 2.4 (Opcional) Instalar com suporte a privacidade (LGPD/GDPR)
+### 2.5 (Opcional) Instalar com suporte a privacidade (LGPD/GDPR)
 
 Para anonimizacao automatica de dados pessoais (PII) via Presidio:
 
@@ -72,7 +97,29 @@ Para anonimizacao automatica de dados pessoais (PII) via Presidio:
 pip install -e ".[privacy]"
 ```
 
-### 2.5 Verificar a instalacao
+### 2.6 Ativar o ambiente em novas sessoes do terminal
+
+O ambiente virtual precisa ser reativado toda vez que voce abrir um novo terminal:
+
+```bash
+cd agent-skills
+source .venv/bin/activate
+uai --help
+```
+
+**Dica:** Adicione ao seu `~/.bashrc` ou `~/.zshrc` para ativar automaticamente
+ao entrar no diretorio:
+
+```bash
+# Adicione ao ~/.bashrc
+if [ -f "$HOME/agent-skills/.venv/bin/activate" ]; then
+    alias uai-env="source $HOME/agent-skills/.venv/bin/activate"
+fi
+```
+
+### 2.7 Verificar a instalacao
+
+Com o ambiente virtual ativo:
 
 ```bash
 uai --help
