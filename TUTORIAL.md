@@ -52,10 +52,20 @@ git --version
 
 ### 2.1 Clonar o repositorio
 
+Clone diretamente o branch com o codigo da ferramenta:
+
 ```bash
-git clone https://github.com/your-org/agent-skills.git
+git clone -b claude/unified-cli-integrator-KxQ8s \
+    https://github.com/your-org/agent-skills.git
 cd agent-skills
 ```
+
+> **Se ja clonou o repositorio** e esta no branch `master`, troque para o branch correto:
+>
+> ```bash
+> git fetch origin
+> git checkout claude/unified-cli-integrator-KxQ8s
+> ```
 
 ### 2.2 Criar e ativar o ambiente virtual
 
