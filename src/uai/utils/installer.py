@@ -94,6 +94,47 @@ def get_cli_path(provider: str) -> str:
     return cli_name   # fallback — subprocess will raise FileNotFoundError
 
 
+def _ensure_user_prefix_in_path() -> None:
+    """
+    After installing to ~/.npm-global, make the bin dir available:
+      1. Inject into os.environ['PATH'] immediately (current process + subprocesses).
+      2. If not already in the user's shell config, append the export line to
+         ~/.bashrc (or ~/.zshrc if that exists and .bashrc does not).
+    """
+    bin_dir = str(_USER_NPM_PREFIX / "bin")
+
+    # 1. Patch PATH for the running process so subsequent shutil.which() calls work
+    current_path = os.environ.get("PATH", "")
+    if bin_dir not in current_path.split(os.pathsep):
+        os.environ["PATH"] = bin_dir + os.pathsep + current_path
+
+    # 2. Persist in shell config
+    export_line = f'export PATH="{bin_dir}:$PATH"'
+
+    home = pathlib.Path.home()
+    zshrc = home / ".zshrc"
+    bashrc = home / ".bashrc"
+    # Pick the right file: prefer .zshrc if it exists, else .bashrc
+    rc_file = zshrc if zshrc.exists() else bashrc
+
+    try:
+        existing = rc_file.read_text() if rc_file.exists() else ""
+        if bin_dir not in existing:
+            with rc_file.open("a") as f:
+                f.write(f"\n# Added by uai install\n{export_line}\n")
+            print(
+                f"\n  Added PATH entry to {rc_file}\n"
+                f"  Run [source {rc_file}] or open a new terminal to apply."
+            )
+    except OSError:
+        # Can't write the rc file — just show the manual instruction
+        print(
+            f"\n  {bin_dir} added to PATH for this session.\n"
+            f"  To persist across terminals:\n"
+            f"    echo '{export_line}' >> ~/.bashrc && source ~/.bashrc"
+        )
+
+
 def install_cli(provider: str) -> bool:
     """
     Attempt to install the CLI for a provider.
@@ -128,16 +169,7 @@ def install_cli(provider: str) -> bool:
         result = subprocess.run(cmd)   # inherits terminal — interactive-friendly
 
         if result.returncode == 0 and use_user_prefix:
-            bin_dir = _USER_NPM_PREFIX / "bin"
-            print(
-                f"\n  Installed to {bin_dir}\n"
-                f"  To use '{info['check']}' from any terminal, add it to your PATH:\n"
-                f"\n"
-                f"    echo 'export PATH=\"{bin_dir}:$PATH\"' >> ~/.bashrc && source ~/.bashrc\n"
-                f"\n"
-                f"  (replace .bashrc with .zshrc if you use zsh)\n"
-                f"  UAI will use the full path automatically without PATH changes."
-            )
+            _ensure_user_prefix_in_path()
 
         return result.returncode == 0
 

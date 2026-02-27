@@ -85,14 +85,22 @@ def _get_version() -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _print_banner(installed_clis: list[str]) -> None:
+def _print_banner(ready: list[str], needs_auth: list[str]) -> None:
     ver = _get_version()
 
-    if installed_clis:
-        connected = "  ".join(f"[green]{p}[/green]" for p in installed_clis)
-        status_line = f"Providers: {connected}"
-    else:
-        status_line = "[yellow]No providers installed yet[/yellow]"
+    lines: list[str] = []
+    if ready:
+        lines.append("Ready:      " + "  ".join(f"[green]{p}[/green]" for p in ready))
+    if needs_auth:
+        lines.append(
+            "Need auth:  "
+            + "  ".join(f"[yellow]{p}[/yellow]" for p in needs_auth)
+            + "  [dim](run uai connect <provider>)[/dim]"
+        )
+    if not ready and not needs_auth:
+        lines.append("[dim]No providers installed yet[/dim]")
+
+    status_line = "\n".join(lines)
 
     content = (
         f"[bold cyan]UAI[/bold cyan] [dim]v{ver}[/dim]\n"
@@ -317,7 +325,7 @@ async def interactive_mode() -> None:
     ready = _detect_ready(cfg)
     needs_auth = _detect_needs_auth(cfg)
 
-    _print_banner(ready)
+    _print_banner(ready, needs_auth)
 
     # ── Nothing installed at all → full onboarding ─────────────────────
     if not installed:
@@ -325,36 +333,25 @@ async def interactive_mode() -> None:
         cfg = cfg_mgr.load()
         installed = _detect_installed()
         needs_auth = _detect_needs_auth(cfg)
+        ready = _detect_ready(cfg)
         if not installed:
             rprint(
                 "[dim]Tip: run [cyan]uai connect <provider>[/cyan] anytime to install a CLI.[/dim]\n"
             )
 
-    # ── CLIs installed but not yet authenticated ────────────────────────
-    if needs_auth:
-        rprint(
-            f"[yellow]⚠[/yellow]  Installed but [bold]not authenticated[/bold]: "
-            + ", ".join(f"[cyan]{n}[/cyan]" for n in needs_auth)
-        )
-        rprint(
-            "[dim]  These providers won't be selected until authenticated.\n"
-            f"  Run [cyan]uai connect <provider>[/cyan] to complete authentication.[/dim]\n"
-        )
-
-        # Offer to authenticate right now if there's no ready provider yet
-        if not ready:
-            try:
-                ans = input("  Authenticate now? (y/N) ").strip().lower()
-            except (KeyboardInterrupt, EOFError):
-                ans = ""
-            if ans in ("y", "yes"):
-                from uai.cli.commands.connect import _connect
-                for name in needs_auth:
-                    rprint()
-                    await _connect(name)
-                # Refresh after auth
-                cfg = cfg_mgr.load()
-                ready = _detect_ready(cfg)
+    # ── Offer to authenticate if no provider is ready yet ──────────────
+    if not ready and needs_auth:
+        try:
+            ans = input("  Authenticate now? (y/N) ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            ans = ""
+        if ans in ("y", "yes"):
+            from uai.cli.commands.connect import _connect
+            for name in needs_auth:
+                rprint()
+                await _connect(name)
+            cfg = cfg_mgr.load()
+            ready = _detect_ready(cfg)
 
     # Start the chat REPL
     from uai.cli.commands.chat import _chat
