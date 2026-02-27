@@ -164,7 +164,11 @@ class GeminiProvider(BaseProvider):
 
     def is_configured(self) -> bool:
         from uai.utils.installer import is_cli_installed
-        return is_cli_installed("gemini") or bool(self._auth.get_credential("gemini", "api_key"))
+        # CLI path: binary must exist AND OAuth must have been completed
+        if is_cli_installed("gemini") and getattr(self._cfg, "cli_authenticated", False):
+            return True
+        # API fallback: key set manually in env / config
+        return bool(self._auth.get_credential("gemini", "api_key"))
 
     def estimate_cost(self, input_tokens: int, output_tokens: int, model: str | None = None) -> float:
         return 0.0  # Gemini is free

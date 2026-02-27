@@ -112,10 +112,37 @@ def _print_banner(installed_clis: list[str]) -> None:
 
 
 def _detect_installed() -> list[str]:
+    """Return names of providers whose CLI binary is present (regardless of auth)."""
     from uai.utils.installer import is_cli_installed
-    installed = [p["name"] for p in _PROVIDERS_WITH_CLI if is_cli_installed(p["name"])]
-    # Ollama uses HTTP health-check, not credential storage
-    return installed
+    return [p["name"] for p in _PROVIDERS_WITH_CLI if is_cli_installed(p["name"])]
+
+
+def _detect_ready(cfg) -> list[str]:
+    """Return names of providers that are installed AND authenticated (ready to use)."""
+    from uai.utils.installer import is_cli_installed
+    ready = []
+    for p in _PROVIDERS_WITH_CLI:
+        name = p["name"]
+        if not is_cli_installed(name):
+            continue
+        prov_cfg = cfg.providers.get(name)
+        if prov_cfg and getattr(prov_cfg, "cli_authenticated", False):
+            ready.append(name)
+    return ready
+
+
+def _detect_needs_auth(cfg) -> list[str]:
+    """Return names of providers installed but not yet authenticated."""
+    from uai.utils.installer import is_cli_installed
+    needs = []
+    for p in _PROVIDERS_WITH_CLI:
+        name = p["name"]
+        if not is_cli_installed(name):
+            continue
+        prov_cfg = cfg.providers.get(name)
+        if not (prov_cfg and getattr(prov_cfg, "cli_authenticated", False)):
+            needs.append(name)
+    return needs
 
 
 def _print_onboarding_table() -> None:
@@ -273,8 +300,9 @@ async def interactive_mode() -> None:
     """
     Default mode when `uai` is called without arguments.
 
-    • Shows a welcome banner with installed CLI providers.
+    • Shows a welcome banner with ready (installed + authenticated) providers.
     • If nothing is installed, runs the onboarding flow (CLI installation).
+    • If CLIs are installed but not authenticated, offers to authenticate now.
     • Drops into the interactive chat REPL.
     """
     from uai.core.config import ConfigManager
@@ -283,17 +311,50 @@ async def interactive_mode() -> None:
     cfg_mgr = ConfigManager()
     cfg_mgr.initialize()
     auth = AuthManager(cfg_mgr.config_dir)
+    cfg = cfg_mgr.load()
 
     installed = _detect_installed()
-    _print_banner(installed)
+    ready = _detect_ready(cfg)
+    needs_auth = _detect_needs_auth(cfg)
 
+    _print_banner(ready)
+
+    # ── Nothing installed at all → full onboarding ─────────────────────
     if not installed:
         await _onboarding_flow()
+        cfg = cfg_mgr.load()
         installed = _detect_installed()
+        needs_auth = _detect_needs_auth(cfg)
         if not installed:
             rprint(
                 "[dim]Tip: run [cyan]uai connect <provider>[/cyan] anytime to install a CLI.[/dim]\n"
             )
+
+    # ── CLIs installed but not yet authenticated ────────────────────────
+    if needs_auth:
+        rprint(
+            f"[yellow]⚠[/yellow]  Installed but [bold]not authenticated[/bold]: "
+            + ", ".join(f"[cyan]{n}[/cyan]" for n in needs_auth)
+        )
+        rprint(
+            "[dim]  These providers won't be selected until authenticated.\n"
+            f"  Run [cyan]uai connect <provider>[/cyan] to complete authentication.[/dim]\n"
+        )
+
+        # Offer to authenticate right now if there's no ready provider yet
+        if not ready:
+            try:
+                ans = input("  Authenticate now? (y/N) ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                ans = ""
+            if ans in ("y", "yes"):
+                from uai.cli.commands.connect import _connect
+                for name in needs_auth:
+                    rprint()
+                    await _connect(name)
+                # Refresh after auth
+                cfg = cfg_mgr.load()
+                ready = _detect_ready(cfg)
 
     # Start the chat REPL
     from uai.cli.commands.chat import _chat

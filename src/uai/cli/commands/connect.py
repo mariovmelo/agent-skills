@@ -70,6 +70,14 @@ _CREDENTIAL_KEYS: dict[str, str] = {
 }
 
 
+def _set_cli_authenticated(cfg_mgr, provider: str, value: bool) -> None:
+    """Persist cli_authenticated flag for a provider in config.yaml."""
+    cfg = cfg_mgr.load()
+    if provider in cfg.providers:
+        cfg.providers[provider].cli_authenticated = value
+        cfg_mgr.save(cfg)
+
+
 def connect(
     provider: str = typer.Argument(
         ...,
@@ -172,6 +180,8 @@ async def _connect(provider: str) -> None:
         result = subprocess.run(cmd)   # inherits terminal — OAuth flows work naturally
 
         if result.returncode == 0:
+            # Mark as authenticated in config so is_configured() returns True
+            _set_cli_authenticated(cfg_mgr, provider, True)
             rprint(f"\n[green]✓[/green] {info['display']} authenticated and ready!")
             rprint(f"\nUse [cyan]uai ask \"hello\"[/cyan] to try it.")
         else:

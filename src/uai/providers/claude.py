@@ -159,7 +159,11 @@ class ClaudeProvider(APIProviderMixin):
 
     def is_configured(self) -> bool:
         from uai.utils.installer import is_cli_installed
-        return bool(self._auth.get_credential("claude", "api_key")) or is_cli_installed("claude")
+        # CLI path: binary must exist AND OAuth must have been completed
+        if is_cli_installed("claude") and getattr(self._cfg, "cli_authenticated", False):
+            return True
+        # API fallback: key set manually in env / config
+        return bool(self._auth.get_credential("claude", "api_key"))
 
     def estimate_cost(self, input_tokens: int, output_tokens: int, model: str | None = None) -> float:
         alias = model or self.DEFAULT_MODEL

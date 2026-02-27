@@ -10,6 +10,7 @@ class ProviderConfig(BaseModel):
     preferred_backend: str = "cli"   # "cli" | "api" | "auto"  — cli is default
     priority: int = 3                # 1-5; higher = preferred (when cost is equal)
     daily_limit: int | None = None
+    cli_authenticated: bool = False  # True after `uai connect` OAuth is completed
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
