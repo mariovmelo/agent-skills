@@ -1,5 +1,6 @@
 """UAI CLI — main Typer application."""
 from __future__ import annotations
+import asyncio
 import typer
 from rich.console import Console
 
@@ -12,10 +13,19 @@ console = Console()
 app = typer.Typer(
     name="uai",
     help="[bold cyan]UAI[/] — Unified AI CLI: one tool for all AI providers",
-    no_args_is_help=True,
+    no_args_is_help=False,
+    invoke_without_command=True,
     rich_markup_mode="rich",
     pretty_exceptions_enable=False,
 )
+
+
+@app.callback(invoke_without_command=True)
+def default_callback(ctx: typer.Context) -> None:
+    """Launch interactive mode when no subcommand is given."""
+    if ctx.invoked_subcommand is None:
+        from uai.cli.commands.interactive import interactive_mode
+        asyncio.run(interactive_mode())
 
 app.command("ask")(ask.ask)
 app.command("chat")(chat.chat)
