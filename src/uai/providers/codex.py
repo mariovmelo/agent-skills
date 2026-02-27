@@ -14,6 +14,7 @@ from uai.models.provider import BackendType, ProviderStatus, TaskCapability
 from uai.providers.base import (
     AuthError, BaseProvider, ProviderError, ProviderResponse, RateLimitError,
 )
+from uai.utils.installer import get_cli_path
 
 
 class CodexProvider(BaseProvider):
@@ -60,7 +61,7 @@ class CodexProvider(BaseProvider):
         If OPENAI_BASE_URL points to OpenRouter, codex will fail.
         """
         full_prompt = self._build_prompt(prompt, history)
-        cmd = ["codex", "exec", "--skip-git-repo-check", full_prompt]
+        cmd = [get_cli_path("codex"), "exec", "--skip-git-repo-check", full_prompt]
 
         # Build clean environment
         env = os.environ.copy()

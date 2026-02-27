@@ -9,6 +9,7 @@ from uai.models.provider import BackendType, ProviderStatus, TaskCapability
 from uai.providers.base import (
     AuthError, BaseProvider, ProviderError, ProviderResponse, RateLimitError,
 )
+from uai.utils.installer import get_cli_path
 
 
 class GeminiProvider(BaseProvider):
@@ -59,7 +60,7 @@ class GeminiProvider(BaseProvider):
         model_id = self._resolve(model)
         full_prompt = self._build_prompt(prompt, history)
 
-        cmd = ["gemini", "-m", model_id, "-p", full_prompt]
+        cmd = [get_cli_path("gemini"), "-m", model_id, "-p", full_prompt]
         if output_json:
             cmd += ["--output-format", "json"]
 

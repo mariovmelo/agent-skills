@@ -9,6 +9,7 @@ from uai.models.provider import BackendType, ProviderStatus, TaskCapability
 from uai.providers.base import (
     APIProviderMixin, AuthError, ProviderError, ProviderResponse, RateLimitError,
 )
+from uai.utils.installer import get_cli_path
 
 
 class ClaudeProvider(APIProviderMixin):
@@ -116,7 +117,7 @@ class ClaudeProvider(APIProviderMixin):
         """Use claude -p in headless mode."""
         full_prompt = self._build_prompt(prompt, history)
         model_id = self._resolve_model_alias(model)
-        cmd = ["claude", "-p", full_prompt, "--model", model_id]
+        cmd = [get_cli_path("claude"), "-p", full_prompt, "--model", model_id]
 
         t0 = time.monotonic()
         try:

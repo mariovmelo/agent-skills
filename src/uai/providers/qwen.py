@@ -9,6 +9,7 @@ from uai.models.provider import BackendType, ProviderStatus, TaskCapability
 from uai.providers.base import (
     AuthError, BaseProvider, ProviderError, ProviderResponse, RateLimitError,
 )
+from uai.utils.installer import get_cli_path
 
 
 class QwenProvider(BaseProvider):
@@ -59,7 +60,7 @@ class QwenProvider(BaseProvider):
     ) -> ProviderResponse:
         """Use qwen-code headless mode: qwen -p "prompt"."""
         full_prompt = self._build_prompt(prompt, history)
-        cmd = ["qwen", "-p", full_prompt]
+        cmd = [get_cli_path("qwen"), "-p", full_prompt]
 
         t0 = time.monotonic()
         try:
