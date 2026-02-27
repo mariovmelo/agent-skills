@@ -129,7 +129,17 @@ class OllamaProvider(APIProviderMixin):
         return ProviderStatus.UNAVAILABLE
 
     def is_configured(self) -> bool:
-        return True   # No credentials needed; just needs Ollama running
+        """Return True only if the Ollama HTTP server is reachable (fast TCP check)."""
+        import socket, urllib.parse
+        base_url = getattr(self._cfg, "base_url", "http://localhost:11434")
+        parsed = urllib.parse.urlparse(base_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 11434
+        try:
+            with socket.create_connection((host, port), timeout=1.0):
+                return True
+        except OSError:
+            return False
 
     def estimate_cost(self, input_tokens: int, output_tokens: int, model: str | None = None) -> float:
         return 0.0

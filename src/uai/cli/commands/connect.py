@@ -12,26 +12,28 @@ _CLI_PROVIDERS: dict[str, dict] = {
     "gemini": {
         "display": "Google Gemini",
         "npm": "@google/gemini-cli",
-        "post_install": "Run [cyan]gemini[/cyan] once to complete OAuth login.",
+        # Command args used to trigger and verify OAuth after install
+        "auth_args": ["-m", "flash", "-p", "hi"],
     },
     "qwen": {
         "display": "Qwen Code",
         "npm": "@qwen/qwen-code",
-        "post_install": "Run [cyan]qwen[/cyan] once to complete OAuth login.",
+        "auth_args": ["-p", "hi"],
     },
     "claude": {
         "display": "Anthropic Claude",
         "npm": "@anthropic-ai/claude-code",
-        "post_install": "Run [cyan]claude[/cyan] once to complete browser login.",
+        "auth_args": ["-p", "hi", "--model", "haiku"],
     },
     "codex": {
         "display": "OpenAI Codex",
         "npm": "@openai/codex",
-        "post_install": "Run [cyan]codex[/cyan] once to complete browser login.",
+        "auth_args": ["exec", "--skip-git-repo-check", "hi"],
     },
     "ollama": {
         "display": "Ollama (local)",
         "script": "curl -fsSL https://ollama.ai/install.sh | sh",
+        # No auth_args — ollama uses no OAuth; user pulls a model separately
         "post_install": (
             "Pull a model: [cyan]ollama pull qwen2.5-coder[/cyan]\n"
             "  Then start the server: [cyan]ollama serve[/cyan]"
@@ -68,27 +70,11 @@ _CREDENTIAL_KEYS: dict[str, str] = {
 }
 
 
-async def _test_connection(provider: str, auth, cfg_mgr) -> tuple[bool, str]:
-    try:
-        from uai.providers import get_provider_class
-        cls = get_provider_class(provider)
-        prov_cfg = cfg_mgr.get_provider_config(provider)
-        instance = cls(auth, prov_cfg)
-        status = await instance.health_check()
-        from uai.models.provider import ProviderStatus
-        if status == ProviderStatus.AVAILABLE:
-            return True, f"{provider} is available"
-        return False, f"Status: {status.value}"
-    except Exception as e:
-        return False, str(e)
-
-
 def connect(
     provider: str = typer.Argument(
         ...,
         help="Provider name (gemini, qwen, claude, codex, ollama, groq, deepseek)",
     ),
-    test: bool = typer.Option(True, "--test/--no-test", help="Test connection after install"),
 ) -> None:
     """
     Install the CLI for an AI provider (or show how to configure API-only providers).
@@ -99,13 +85,13 @@ def connect(
     API-only providers (groq, deepseek) have no CLI. Set their key as an environment
     variable or add it to [cyan]~/.uai/config.yaml[/cyan].
     """
-    asyncio.run(_connect(provider, test))
+    asyncio.run(_connect(provider))
 
 
-async def _connect(provider: str, test: bool) -> None:
+async def _connect(provider: str) -> None:
     from uai.core.config import ConfigManager
     from uai.core.auth import AuthManager
-    from uai.utils.installer import is_cli_installed, install_cli, npm_available
+    from uai.utils.installer import is_cli_installed, install_cli, npm_available, get_cli_path
 
     cfg_mgr = ConfigManager()
     cfg_mgr.initialize()
@@ -168,15 +154,32 @@ async def _connect(provider: str, test: bool) -> None:
         cfg.providers[provider].enabled = True
         cfg_mgr.save(cfg)
 
-    rprint(f"\n[dim]{info['post_install']}[/dim]")
+    # ── Ollama: no OAuth; just show post-install steps ─────────────────
+    if "post_install" in info:
+        rprint(f"\n[yellow]Next steps:[/yellow]")
+        rprint(f"  {info['post_install']}")
+        return
 
-    if test:
-        rprint("\nTesting connection...", end=" ")
-        ok, message = await _test_connection(provider, auth, cfg_mgr)
-        if ok:
-            rprint(f"[green]✓ {message}[/green]")
+    # ── OAuth / auth verification step ────────────────────────────────
+    auth_args = info.get("auth_args")
+    if auth_args:
+        rprint(
+            f"\n[bold]Step 2 — Authenticate {info['display']}[/bold]\n"
+            f"[dim]A browser window will open. Log in, then return to this terminal.[/dim]\n"
+        )
+        import subprocess
+        cmd = [get_cli_path(provider)] + auth_args
+        result = subprocess.run(cmd)   # inherits terminal — OAuth flows work naturally
+
+        if result.returncode == 0:
+            rprint(f"\n[green]✓[/green] {info['display']} authenticated and ready!")
+            rprint(f"\nUse [cyan]uai ask \"hello\"[/cyan] to try it.")
         else:
-            rprint(f"[yellow]⚠ {message}[/yellow]")
-
-    rprint(f"\n[green]{info['display']} connected![/green] "
-           f"Use [cyan]uai ask \"hello\"[/cyan] to try it.")
+            rprint(
+                f"\n[yellow]⚠[/yellow] Authentication may not have completed "
+                f"(exit code {result.returncode})."
+            )
+            rprint(
+                f"  Run [cyan]{provider} {' '.join(auth_args)}[/cyan] to retry, "
+                f"or just type [cyan]uai ask \"hello\"[/cyan] — UAI will prompt for auth."
+            )

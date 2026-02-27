@@ -104,6 +104,13 @@ class RouterEngine:
             if history_tokens > 0 and history_tokens > cls.context_window_tokens * 0.6:
                 continue
 
+            # Skip providers that are not yet configured/ready
+            try:
+                if not cls(self._auth, prov_cfg).is_configured():
+                    continue
+            except Exception:
+                continue
+
             score = self._score(name, cls, task_type, prov_cfg, free_only)
             scored.append((name, score))
 
