@@ -138,7 +138,7 @@ async def _connect(provider: str, test: bool) -> None:
     if is_cli_installed(provider):
         rprint(f"[green]✓[/green] {info['display']} CLI is already installed.")
     else:
-        # Install
+        # Install — process inherits terminal so output, prompts and OAuth flows work
         if "npm" in info:
             if not npm_available():
                 rprint(
@@ -146,15 +146,16 @@ async def _connect(provider: str, test: bool) -> None:
                     "[cyan]https://nodejs.org/[/cyan] and re-run."
                 )
                 raise typer.Exit(1)
-            rprint(f"Installing via npm: [dim]npm install -g {info['npm']}[/dim]")
+            rprint(f"\nRunning: [dim]npm install -g {info['npm']}[/dim]\n")
         elif "script" in info:
-            rprint(f"Running: [dim]{info['script']}[/dim]")
+            rprint(f"\nRunning: [dim]{info['script']}[/dim]\n")
 
         ok = install_cli(provider)
+
         if ok:
-            rprint(f"[green]✓[/green] {info['display']} CLI installed.")
+            rprint(f"\n[green]✓[/green] {info['display']} CLI installed.")
         else:
-            rprint(f"[red]✗[/red] Installation failed.")
+            rprint(f"\n[red]✗[/red] Installation failed.")
             if "npm" in info:
                 rprint(f"  Try manually: [dim]npm install -g {info['npm']}[/dim]")
             elif "script" in info:

@@ -198,25 +198,28 @@ async def _install_provider(p: dict) -> bool:
         rprint(f"  [green]✓[/green] {p['display']} already installed.")
         return True
 
-    rprint(f"  Installing [cyan]{p['display']}[/cyan]...", end=" ")
-
     # npm package
     if "npm" in p:
         if not npm_available():
-            rprint("[yellow]skipped (npm not found)[/yellow]")
+            rprint(f"  [yellow]⚠[/yellow] npm not found — cannot install {p['display']}.")
+            rprint(f"    Install Node.js from [cyan]https://nodejs.org/[/cyan] then run:")
+            rprint(f"    [dim]npm install -g {p['npm']}[/dim]")
             return False
+        rprint(f"\n  Installing [bold cyan]{p['display']}[/bold cyan] "
+               f"[dim](npm install -g {p['npm']})[/dim]")
         ok = install_cli(name)
     elif "script" in p:
+        rprint(f"\n  Installing [bold cyan]{p['display']}[/bold cyan]...")
         ok = install_cli(name)
     else:
         ok = False
 
     if ok:
-        rprint("[green]done[/green]")
+        rprint(f"\n  [green]✓[/green] {p['display']} installed.")
     else:
-        rprint("[red]failed[/red]")
+        rprint(f"\n  [red]✗[/red] {p['display']} installation failed.")
         if "npm" in p:
-            rprint(f"    Manual: [dim]npm install -g {p['npm']}[/dim]")
+            rprint(f"    Try manually: [dim]npm install -g {p['npm']}[/dim]")
         elif "script" in p:
             rprint(f"    Manual: [dim]{p['script']}[/dim]")
 

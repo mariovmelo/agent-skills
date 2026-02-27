@@ -42,6 +42,9 @@ def is_cli_installed(provider: str) -> bool:
 def install_cli(provider: str) -> bool:
     """
     Attempt to install the CLI for a provider.
+
+    The subprocess inherits the current terminal (stdin/stdout/stderr) so
+    interactive prompts, progress bars, and OAuth flows work normally.
     Returns True on success, False on failure.
     """
     info = CLI_INSTALL_COMMANDS.get(provider)
@@ -55,12 +58,12 @@ def install_cli(provider: str) -> bool:
             print(f"  npm not found. Cannot auto-install {info['description']}.")
             return False
         cmd = [npm, "install", "-g", str(info["npm"])]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd)          # inherits terminal — interactive-friendly
         return result.returncode == 0
 
     # Shell script install
     if "script" in info:
-        result = subprocess.run(str(info["script"]), shell=True, capture_output=True, text=True)
+        result = subprocess.run(str(info["script"]), shell=True)   # inherits terminal
         return result.returncode == 0
 
     return False
