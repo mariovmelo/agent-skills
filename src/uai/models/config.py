@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 class ProviderConfig(BaseModel):
     enabled: bool = True
     default_model: str | None = None
-    preferred_backend: str = "api"   # "api" | "cli" | "auto"
+    preferred_backend: str = "cli"   # "cli" | "api" | "auto"  — cli is default
     priority: int = 3                # 1-5; higher = preferred (when cost is equal)
     daily_limit: int | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
@@ -84,10 +84,10 @@ class ConfigSchema(BaseModel):
             "gemini":   ProviderConfig(preferred_backend="cli",  priority=5),
             "qwen":     ProviderConfig(preferred_backend="cli",  priority=4, daily_limit=1000),
             "ollama":   OllamaConfig(preferred_backend="api",   priority=5),
-            "claude":   ProviderConfig(preferred_backend="api",  priority=2),
+            "claude":   ProviderConfig(preferred_backend="cli",  priority=2),
             "codex":    ProviderConfig(preferred_backend="cli",  priority=2),
-            "deepseek": ProviderConfig(enabled=False,            priority=3),
-            "groq":     ProviderConfig(enabled=False,            priority=3),
+            "deepseek": ProviderConfig(enabled=False, preferred_backend="api", priority=3),
+            "groq":     ProviderConfig(enabled=False, preferred_backend="api", priority=3),
         }
     )
     routing: RoutingConfig = Field(default_factory=RoutingConfig)

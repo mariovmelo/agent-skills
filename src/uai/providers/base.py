@@ -118,13 +118,29 @@ class BaseProvider(ABC):
         return "\n".join(lines)
 
     def preferred_backend(self) -> BackendType:
-        """Select backend based on config preference and what's available."""
-        pref = getattr(self._cfg, "preferred_backend", "auto")
-        if pref == "api" and BackendType.API in self.supported_backends:
-            return BackendType.API
-        if pref == "cli" and BackendType.CLI in self.supported_backends:
-            return BackendType.CLI
-        # Fallback: first in supported list
+        """Select backend based on config preference and what's available.
+
+        Priority:
+          - "api"        → always use API (if supported)
+          - "cli"/"auto" → use CLI if installed; fall back to API when CLI absent
+        """
+        pref = getattr(self._cfg, "preferred_backend", "cli")
+
+        # Explicit API preference — skip CLI detection
+        if pref == "api":
+            if BackendType.API in self.supported_backends:
+                return BackendType.API
+            return self.supported_backends[0] if self.supported_backends else BackendType.API
+
+        # "cli" or "auto": prefer CLI when installed, fall back to API
+        if BackendType.CLI in self.supported_backends:
+            from uai.utils.installer import is_cli_installed
+            if is_cli_installed(self.name):
+                return BackendType.CLI
+            # CLI not installed — use API if available (key may be in env/config)
+            if BackendType.API in self.supported_backends:
+                return BackendType.API
+
         return self.supported_backends[0] if self.supported_backends else BackendType.API
 
     def resolve_model(self, model_alias: str | None) -> str:

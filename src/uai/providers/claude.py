@@ -23,7 +23,7 @@ class ClaudeProvider(APIProviderMixin):
         TaskCapability.GENERAL_CHAT,
         TaskCapability.PRIVACY_AUDIT,
     ]
-    supported_backends = [BackendType.API, BackendType.CLI]
+    supported_backends = [BackendType.CLI, BackendType.API]
     context_window_tokens = 200_000
 
     MODELS: dict[str, dict[str, Any]] = {
@@ -149,10 +149,10 @@ class ClaudeProvider(APIProviderMixin):
 
     # ------------------------------------------------------------------
     async def health_check(self) -> ProviderStatus:
-        if self._auth.get_credential("claude", "api_key"):
-            return ProviderStatus.AVAILABLE
         from uai.utils.installer import is_cli_installed
         if is_cli_installed("claude"):
+            return ProviderStatus.AVAILABLE
+        if self._auth.get_credential("claude", "api_key"):
             return ProviderStatus.AVAILABLE
         return ProviderStatus.NOT_CONFIGURED
 
@@ -175,7 +175,16 @@ class ClaudeProvider(APIProviderMixin):
         history: list[Message] | None = None,
         model: str | None = None,
     ):
-        """Stream tokens from Anthropic API. Falls back to CLI single-yield if no API key."""
+        """Stream tokens. Uses CLI when installed (preferred), falls back to API streaming."""
+        backend = self.preferred_backend()
+
+        # CLI backend: single yield (CLIs don't support streaming)
+        if backend == BackendType.CLI:
+            response = await self._send_cli(prompt, history, model, timeout=120)
+            yield response.text
+            return
+
+        # API backend: true streaming via Anthropic SDK
         api_key = self._auth.get_credential("claude", "api_key")
         if not api_key:
             response = await self.send(prompt, history=history, model=model)

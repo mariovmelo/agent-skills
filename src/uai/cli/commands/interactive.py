@@ -12,51 +12,63 @@ from rich import print as rprint
 console = Console()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Provider catalog — ordered: free first, then paid
+# Provider catalog
+# Providers with a CLI are installed automatically; API-only ones need a key
+# configured manually in ~/.uai/config.yaml.
 # ──────────────────────────────────────────────────────────────────────────────
 
-_PROVIDER_CATALOG: list[dict] = [
+_PROVIDERS_WITH_CLI: list[dict] = [
     {
         "name": "gemini",
         "display": "Google Gemini",
         "cost": "free",
         "desc": "Fast, generous free tier — recommended",
-    },
-    {
-        "name": "groq",
-        "display": "Groq",
-        "cost": "free",
-        "desc": "Ultra-fast inference, free tier",
-    },
-    {
-        "name": "ollama",
-        "display": "Ollama (local)",
-        "cost": "free",
-        "desc": "Fully offline, no API key needed",
+        "npm": "@google/gemini-cli",
     },
     {
         "name": "qwen",
         "display": "Qwen Code",
         "cost": "free",
         "desc": "Alibaba Qwen Code, 1 000 req/day",
+        "npm": "@qwen/qwen-code",
     },
     {
         "name": "claude",
         "display": "Anthropic Claude",
         "cost": "paid",
         "desc": "State-of-the-art reasoning & code",
+        "npm": "@anthropic-ai/claude-code",
     },
     {
         "name": "codex",
         "display": "OpenAI Codex",
         "cost": "paid",
         "desc": "GPT-4o optimised for coding tasks",
+        "npm": "@openai/codex",
+    },
+    {
+        "name": "ollama",
+        "display": "Ollama (local)",
+        "cost": "free",
+        "desc": "Fully offline, no account needed",
+        "script": "curl -fsSL https://ollama.ai/install.sh | sh",
+    },
+]
+
+_PROVIDERS_API_ONLY: list[dict] = [
+    {
+        "name": "groq",
+        "display": "Groq",
+        "cost": "free",
+        "desc": "Ultra-fast inference, free tier",
+        "key_env": "GROQ_API_KEY",
     },
     {
         "name": "deepseek",
         "display": "DeepSeek",
         "cost": "paid",
         "desc": "Cost-effective, strong at code",
+        "key_env": "DEEPSEEK_API_KEY",
     },
 ]
 
@@ -73,14 +85,14 @@ def _get_version() -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _print_banner(configured_providers: list[str]) -> None:
+def _print_banner(installed_clis: list[str]) -> None:
     ver = _get_version()
 
-    if configured_providers:
-        connected = "  ".join(f"[green]{p}[/green]" for p in configured_providers)
-        status_line = f"Connected: {connected}"
+    if installed_clis:
+        connected = "  ".join(f"[green]{p}[/green]" for p in installed_clis)
+        status_line = f"Providers: {connected}"
     else:
-        status_line = "[yellow]No providers connected yet[/yellow]"
+        status_line = "[yellow]No providers installed yet[/yellow]"
 
     content = (
         f"[bold cyan]UAI[/bold cyan] [dim]v{ver}[/dim]\n"
@@ -99,7 +111,16 @@ def _print_banner(configured_providers: list[str]) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _print_provider_table() -> None:
+def _detect_installed() -> list[str]:
+    from uai.utils.installer import is_cli_installed
+    installed = [p["name"] for p in _PROVIDERS_WITH_CLI if is_cli_installed(p["name"])]
+    # Ollama uses HTTP health-check, not credential storage
+    return installed
+
+
+def _print_onboarding_table() -> None:
+    from uai.utils.installer import is_cli_installed, npm_available
+
     table = Table(
         show_header=True,
         header_style="bold dim",
@@ -110,105 +131,107 @@ def _print_provider_table() -> None:
     table.add_column("#", style="dim", width=3)
     table.add_column("Provider", style="cyan", min_width=20)
     table.add_column("Cost", min_width=6)
+    table.add_column("Status", min_width=16)
     table.add_column("Description", style="dim")
 
-    for i, p in enumerate(_PROVIDER_CATALOG, 1):
+    for i, p in enumerate(_PROVIDERS_WITH_CLI, 1):
         cost = "[green]free[/green]" if p["cost"] == "free" else "[yellow]paid[/yellow]"
-        table.add_row(str(i), p["display"], cost, p["desc"])
+        installed = is_cli_installed(p["name"]) or (
+            # Ollama: check binary
+            p["name"] == "ollama" and is_cli_installed("ollama")
+        )
+        status = "[green]✓ installed[/green]" if installed else "[dim]not installed[/dim]"
+        table.add_row(str(i), p["display"], cost, status, p["desc"])
 
     console.print(table)
+
+    # API-only section
+    if _PROVIDERS_API_ONLY:
+        console.print()
+        console.print(
+            "[dim]API-only providers (no CLI available — configure via config file):[/dim]"
+        )
+        for p in _PROVIDERS_API_ONLY:
+            cost = "[green]free[/green]" if p["cost"] == "free" else "[yellow]paid[/yellow]"
+            console.print(
+                f"  [dim cyan]{p['display']}[/dim cyan]  {cost}  "
+                f"[dim]{p['desc']} — set [cyan]{p['key_env']}[/cyan] in "
+                f"~/.uai/config.yaml[/dim]"
+            )
+
     console.print()
 
+    if not npm_available():
+        console.print(
+            "[yellow]⚠[/yellow] [dim]npm not found — Node.js CLIs cannot be auto-installed. "
+            "Install Node.js from https://nodejs.org/ first.[/dim]\n"
+        )
 
-def _parse_selection(raw: str) -> list[str]:
-    """Parse user input into a list of provider names."""
+
+def _parse_selection(raw: str, total: int) -> list[int]:
+    """Return 0-based indices of selected providers."""
     raw = raw.strip().lower()
 
-    if raw == "free":
-        return [p["name"] for p in _PROVIDER_CATALOG if p["cost"] == "free"]
-
     if raw == "all":
-        return [p["name"] for p in _PROVIDER_CATALOG]
+        return list(range(total))
 
-    name_set = {p["name"] for p in _PROVIDER_CATALOG}
-    selected: list[str] = []
+    if raw == "free":
+        return [i for i, p in enumerate(_PROVIDERS_WITH_CLI) if p["cost"] == "free"]
+
+    indices: list[int] = []
     for part in raw.split(","):
         part = part.strip()
         if part.isdigit():
             idx = int(part) - 1
-            if 0 <= idx < len(_PROVIDER_CATALOG):
-                selected.append(_PROVIDER_CATALOG[idx]["name"])
-        elif part in name_set:
-            selected.append(part)
-
-    return selected
+            if 0 <= idx < total:
+                indices.append(idx)
+    return indices
 
 
-async def _connect_provider_interactive(provider: str, auth, cfg_mgr) -> None:
-    """Connect a single provider, prompting for credentials inline."""
-    from uai.cli.commands.connect import (
-        _CONNECT_INSTRUCTIONS,
-        _CREDENTIAL_KEYS,
-        _test_connection,
-    )
+async def _install_provider(p: dict) -> bool:
+    """Install the CLI for a provider. Returns True on success."""
+    from uai.utils.installer import install_cli, is_cli_installed, npm_available
 
-    rprint(f"[bold cyan]── {provider} ──[/bold cyan]")
+    name = p["name"]
 
-    if provider == "ollama":
-        rprint(f"[dim]{_CONNECT_INSTRUCTIONS['ollama']}[/dim]")
-        rprint("[green]✓[/green] No credentials needed — just ensure Ollama is running.\n")
-        return
+    if is_cli_installed(name):
+        rprint(f"  [green]✓[/green] {p['display']} already installed.")
+        return True
 
-    instructions = _CONNECT_INSTRUCTIONS.get(provider, "")
-    if instructions:
-        rprint(f"[dim]{instructions}[/dim]\n")
+    rprint(f"  Installing [cyan]{p['display']}[/cyan]...", end=" ")
 
-    cred_key = _CREDENTIAL_KEYS.get(provider, "api_key")
-
-    try:
-        import typer as _typer
-        api_key = _typer.prompt(
-            f"  {provider} API key",
-            hide_input=True,
-            confirmation_prompt=False,
-            default="",
-            show_default=False,
-        )
-    except (KeyboardInterrupt, EOFError):
-        rprint("\n[dim]Skipped.[/dim]\n")
-        return
-
-    if not api_key.strip():
-        rprint(f"[dim]Skipped {provider}.[/dim]\n")
-        return
-
-    auth.set_credential(provider, cred_key, api_key.strip())
-    rprint("[green]✓[/green] Credentials saved.")
-
-    # Enable provider in config
-    cfg = cfg_mgr.load()
-    if provider in cfg.providers:
-        cfg.providers[provider].enabled = True
-        cfg_mgr.save(cfg)
-
-    # Test the connection
-    rprint("  Testing connection...", end=" ")
-    ok, message = await _test_connection(provider, auth, cfg_mgr)
-    if ok:
-        rprint(f"[green]✓ {message}[/green]\n")
+    # npm package
+    if "npm" in p:
+        if not npm_available():
+            rprint("[yellow]skipped (npm not found)[/yellow]")
+            return False
+        ok = install_cli(name)
+    elif "script" in p:
+        ok = install_cli(name)
     else:
-        rprint(f"[yellow]⚠ {message}[/yellow]\n")
+        ok = False
+
+    if ok:
+        rprint("[green]done[/green]")
+    else:
+        rprint("[red]failed[/red]")
+        if "npm" in p:
+            rprint(f"    Manual: [dim]npm install -g {p['npm']}[/dim]")
+        elif "script" in p:
+            rprint(f"    Manual: [dim]{p['script']}[/dim]")
+
+    return ok
 
 
-async def _onboarding_flow(auth, cfg_mgr) -> None:
-    """Guide the user through connecting at least one provider."""
-    rprint("[bold]No AI providers configured yet.[/bold] Let's connect one!\n")
-    _print_provider_table()
+async def _onboarding_flow() -> None:
+    """Show provider table, let user pick which CLIs to install."""
+    rprint("[bold]No AI providers installed yet.[/bold] Let's set one up!\n")
+    _print_onboarding_table()
 
-    rprint("[dim]Which providers would you like to connect?[/dim]")
+    rprint("[dim]Which providers would you like to install?[/dim]")
     rprint(
         "[dim]Enter numbers separated by commas (e.g. [cyan]1,2[/cyan]), "
-        "[cyan]free[/cyan] for all free providers, "
+        "[cyan]free[/cyan] for all free, [cyan]all[/cyan] for everything, "
         "or press Enter to skip.[/dim]"
     )
 
@@ -219,20 +242,23 @@ async def _onboarding_flow(auth, cfg_mgr) -> None:
         return
 
     if not raw:
-        rprint("[dim]Skipped. Connect later with [cyan]uai connect <provider>[/cyan][/dim]\n")
+        rprint(
+            "[dim]Skipped. Install later with [cyan]uai connect <provider>[/cyan][/dim]\n"
+        )
         return
 
-    selected = _parse_selection(raw)
-    if not selected:
+    indices = _parse_selection(raw, len(_PROVIDERS_WITH_CLI))
+    if not indices:
         rprint(
             "[yellow]No valid selection.[/yellow] "
-            "Connect later with [cyan]uai connect <provider>[/cyan]\n"
+            "Install later with [cyan]uai connect <provider>[/cyan]\n"
         )
         return
 
     rprint()
-    for name in selected:
-        await _connect_provider_interactive(name, auth, cfg_mgr)
+    for i in indices:
+        await _install_provider(_PROVIDERS_WITH_CLI[i])
+    rprint()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -244,8 +270,8 @@ async def interactive_mode() -> None:
     """
     Default mode when `uai` is called without arguments.
 
-    • Shows a welcome banner with connected providers.
-    • If nothing is configured, runs the onboarding flow (provider selection).
+    • Shows a welcome banner with installed CLI providers.
+    • If nothing is installed, runs the onboarding flow (CLI installation).
     • Drops into the interactive chat REPL.
     """
     from uai.core.config import ConfigManager
@@ -255,16 +281,15 @@ async def interactive_mode() -> None:
     cfg_mgr.initialize()
     auth = AuthManager(cfg_mgr.config_dir)
 
-    configured = auth.list_configured_providers()
+    installed = _detect_installed()
+    _print_banner(installed)
 
-    _print_banner(configured)
-
-    if not configured:
-        await _onboarding_flow(auth, cfg_mgr)
-        configured = auth.list_configured_providers()
-        if not configured:
+    if not installed:
+        await _onboarding_flow()
+        installed = _detect_installed()
+        if not installed:
             rprint(
-                "[dim]Tip: run [cyan]uai connect <provider>[/cyan] anytime to add a provider.[/dim]\n"
+                "[dim]Tip: run [cyan]uai connect <provider>[/cyan] anytime to install a CLI.[/dim]\n"
             )
 
     # Start the chat REPL

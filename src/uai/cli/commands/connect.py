@@ -1,4 +1,4 @@
-"""uai connect <provider> — connect an AI account."""
+"""uai connect <provider> — install the provider CLI (or show manual API config tip)."""
 from __future__ import annotations
 import asyncio
 import typer
@@ -7,93 +7,65 @@ from rich.console import Console
 
 console = Console()
 
-_CONNECT_INSTRUCTIONS: dict[str, str] = {
-    "claude":   "Get your API key at https://console.anthropic.com/",
-    "gemini":   "Get your API key at https://aistudio.google.com/app/apikey",
-    "codex":    "Get your API key at https://platform.openai.com/api-keys",
-    "qwen":     "Get your OpenRouter key at https://openrouter.ai/keys (free tier available)\n"
-                "  Or install qwen-code CLI for OAuth: npm install -g @qwen/qwen-code",
-    "deepseek": "Get your API key at https://platform.deepseek.com/",
-    "groq":     "Get your API key at https://console.groq.com/keys (free tier)",
-    "ollama":   "No API key needed. Ollama runs locally.\n"
-                "  Install: curl -fsSL https://ollama.ai/install.sh | sh\n"
-                "  Pull a model: ollama pull qwen2.5-coder",
+# Providers that ship a CLI installable via npm or a shell script
+_CLI_PROVIDERS: dict[str, dict] = {
+    "gemini": {
+        "display": "Google Gemini",
+        "npm": "@google/gemini-cli",
+        "post_install": "Run [cyan]gemini[/cyan] once to complete OAuth login.",
+    },
+    "qwen": {
+        "display": "Qwen Code",
+        "npm": "@qwen/qwen-code",
+        "post_install": "Run [cyan]qwen[/cyan] once to complete OAuth login.",
+    },
+    "claude": {
+        "display": "Anthropic Claude",
+        "npm": "@anthropic-ai/claude-code",
+        "post_install": "Run [cyan]claude[/cyan] once to complete browser login.",
+    },
+    "codex": {
+        "display": "OpenAI Codex",
+        "npm": "@openai/codex",
+        "post_install": "Run [cyan]codex[/cyan] once to complete browser login.",
+    },
+    "ollama": {
+        "display": "Ollama (local)",
+        "script": "curl -fsSL https://ollama.ai/install.sh | sh",
+        "post_install": (
+            "Pull a model: [cyan]ollama pull qwen2.5-coder[/cyan]\n"
+            "  Then start the server: [cyan]ollama serve[/cyan]"
+        ),
+    },
 }
+
+# Providers that have no CLI — API key must be set manually in config/env
+_API_ONLY_PROVIDERS: dict[str, dict] = {
+    "groq": {
+        "display": "Groq",
+        "key_name": "api_key",
+        "env": "GROQ_API_KEY",
+        "url": "https://console.groq.com/keys",
+    },
+    "deepseek": {
+        "display": "DeepSeek",
+        "key_name": "api_key",
+        "env": "DEEPSEEK_API_KEY",
+        "url": "https://platform.deepseek.com/",
+    },
+}
+
+# Kept for internal use by interactive.py onboarding
+_CONNECT_INSTRUCTIONS: dict[str, str] = {
+    p: f"Install via npm: npm install -g {info['npm']}"
+    for p, info in _CLI_PROVIDERS.items()
+    if "npm" in info
+}
+_CONNECT_INSTRUCTIONS["ollama"] = _CLI_PROVIDERS["ollama"]["script"]
 
 _CREDENTIAL_KEYS: dict[str, str] = {
-    "claude":   "api_key",
-    "gemini":   "api_key",
-    "codex":    "api_key",
-    "qwen":     "openrouter_key",
-    "deepseek": "api_key",
-    "groq":     "api_key",
+    p: info["key_name"] for p, info in _API_ONLY_PROVIDERS.items()
 }
-
-
-def connect(
-    provider: str = typer.Argument(..., help="Provider name (claude, gemini, codex, qwen, ollama, deepseek, groq)"),
-    key: str = typer.Option(None, "--key", "-k", help="Pass API key directly (instead of interactive prompt)"),
-    test: bool = typer.Option(True, "--test/--no-test", help="Test connection after saving"),
-) -> None:
-    """Connect an AI provider account."""
-    from uai.core.config import ConfigManager
-    from uai.core.auth import AuthManager
-
-    cfg_mgr = ConfigManager()
-    cfg_mgr.initialize()
-    auth = AuthManager(cfg_mgr.config_dir)
-
-    rprint(f"\n[bold cyan]Connecting {provider}...[/bold cyan]")
-
-    # Ollama: no credentials needed
-    if provider == "ollama":
-        rprint(_CONNECT_INSTRUCTIONS["ollama"])
-        rprint("\n[green]✓ Ollama requires no credentials — just ensure it's running.[/green]")
-        rprint("  Test with: [cyan]uai status[/cyan]")
-        return
-
-    if provider not in _CONNECT_INSTRUCTIONS:
-        rprint(f"[red]Unknown provider: {provider}[/red]")
-        rprint(f"Available: {', '.join(_CONNECT_INSTRUCTIONS.keys())}")
-        raise typer.Exit(1)
-
-    rprint(f"[dim]{_CONNECT_INSTRUCTIONS[provider]}[/dim]\n")
-
-    cred_key = _CREDENTIAL_KEYS.get(provider, "api_key")
-
-    # Get the API key
-    if key:
-        api_key = key
-    else:
-        api_key = typer.prompt(
-            f"Enter your {provider} API key",
-            hide_input=True,
-            confirmation_prompt=False,
-        )
-
-    if not api_key.strip():
-        rprint("[red]No key provided. Aborted.[/red]")
-        raise typer.Exit(1)
-
-    auth.set_credential(provider, cred_key, api_key.strip())
-    rprint(f"[green]✓ Credentials saved securely.[/green]")
-
-    # Enable provider in config
-    cfg = cfg_mgr.load()
-    if provider in cfg.providers:
-        cfg.providers[provider].enabled = True
-        cfg_mgr.save(cfg)
-
-    # Test the connection
-    if test:
-        rprint("Testing connection...", end=" ")
-        ok, message = asyncio.run(_test_connection(provider, auth, cfg_mgr))
-        if ok:
-            rprint(f"[green]✓ {message}[/green]")
-        else:
-            rprint(f"[yellow]⚠ {message}[/yellow]")
-
-    rprint(f"\n[green]{provider} connected![/green] Use [cyan]uai ask \"hello\"[/cyan] to try it.")
 
 
 async def _test_connection(provider: str, auth, cfg_mgr) -> tuple[bool, str]:
@@ -109,3 +81,101 @@ async def _test_connection(provider: str, auth, cfg_mgr) -> tuple[bool, str]:
         return False, f"Status: {status.value}"
     except Exception as e:
         return False, str(e)
+
+
+def connect(
+    provider: str = typer.Argument(
+        ...,
+        help="Provider name (gemini, qwen, claude, codex, ollama, groq, deepseek)",
+    ),
+    test: bool = typer.Option(True, "--test/--no-test", help="Test connection after install"),
+) -> None:
+    """
+    Install the CLI for an AI provider (or show how to configure API-only providers).
+
+    CLI-based providers (gemini, qwen, claude, codex, ollama) are installed via npm
+    or a shell script and use OAuth — no API key needed.
+
+    API-only providers (groq, deepseek) have no CLI. Set their key as an environment
+    variable or add it to [cyan]~/.uai/config.yaml[/cyan].
+    """
+    asyncio.run(_connect(provider, test))
+
+
+async def _connect(provider: str, test: bool) -> None:
+    from uai.core.config import ConfigManager
+    from uai.core.auth import AuthManager
+    from uai.utils.installer import is_cli_installed, install_cli, npm_available
+
+    cfg_mgr = ConfigManager()
+    cfg_mgr.initialize()
+    auth = AuthManager(cfg_mgr.config_dir)
+
+    # ── API-only provider ──────────────────────────────────────────────────
+    if provider in _API_ONLY_PROVIDERS:
+        info = _API_ONLY_PROVIDERS[provider]
+        rprint(f"\n[bold cyan]{info['display']}[/bold cyan] is an API-only provider.\n")
+        rprint(f"  Get your key at: [cyan]{info['url']}[/cyan]\n")
+        rprint("  Add it to your environment:")
+        rprint(f"    [dim]export {info['env']}=<your-key>[/dim]\n")
+        rprint("  Or add it to [cyan]~/.uai/config.yaml[/cyan]:")
+        rprint(f"    [dim]providers:\n      {provider}:\n        enabled: true\n        extra:\n          api_key: <your-key>[/dim]\n")
+        rprint("[dim]UAI will pick up the key automatically on the next run.[/dim]")
+        return
+
+    # ── CLI-based provider ─────────────────────────────────────────────────
+    if provider not in _CLI_PROVIDERS:
+        rprint(f"[red]Unknown provider: {provider}[/red]")
+        rprint(
+            f"CLI providers: {', '.join(_CLI_PROVIDERS)}\n"
+            f"API-only providers: {', '.join(_API_ONLY_PROVIDERS)}"
+        )
+        raise typer.Exit(1)
+
+    info = _CLI_PROVIDERS[provider]
+    rprint(f"\n[bold cyan]Connecting {info['display']}...[/bold cyan]")
+
+    if is_cli_installed(provider):
+        rprint(f"[green]✓[/green] {info['display']} CLI is already installed.")
+    else:
+        # Install
+        if "npm" in info:
+            if not npm_available():
+                rprint(
+                    "[yellow]⚠[/yellow] npm not found. Install Node.js from "
+                    "[cyan]https://nodejs.org/[/cyan] and re-run."
+                )
+                raise typer.Exit(1)
+            rprint(f"Installing via npm: [dim]npm install -g {info['npm']}[/dim]")
+        elif "script" in info:
+            rprint(f"Running: [dim]{info['script']}[/dim]")
+
+        ok = install_cli(provider)
+        if ok:
+            rprint(f"[green]✓[/green] {info['display']} CLI installed.")
+        else:
+            rprint(f"[red]✗[/red] Installation failed.")
+            if "npm" in info:
+                rprint(f"  Try manually: [dim]npm install -g {info['npm']}[/dim]")
+            elif "script" in info:
+                rprint(f"  Try manually: [dim]{info['script']}[/dim]")
+            raise typer.Exit(1)
+
+    # Enable provider in config
+    cfg = cfg_mgr.load()
+    if provider in cfg.providers:
+        cfg.providers[provider].enabled = True
+        cfg_mgr.save(cfg)
+
+    rprint(f"\n[dim]{info['post_install']}[/dim]")
+
+    if test:
+        rprint("\nTesting connection...", end=" ")
+        ok, message = await _test_connection(provider, auth, cfg_mgr)
+        if ok:
+            rprint(f"[green]✓ {message}[/green]")
+        else:
+            rprint(f"[yellow]⚠ {message}[/yellow]")
+
+    rprint(f"\n[green]{info['display']} connected![/green] "
+           f"Use [cyan]uai ask \"hello\"[/cyan] to try it.")

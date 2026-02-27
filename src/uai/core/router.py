@@ -192,11 +192,23 @@ class RouterEngine:
         return TaskCapability.GENERAL_CHAT
 
     def _select_backend(self, cls, prov_cfg) -> BackendType:
-        pref = getattr(prov_cfg, "preferred_backend", "auto")
-        if pref == "cli" and BackendType.CLI in cls.supported_backends:
-            return BackendType.CLI
-        if pref == "api" and BackendType.API in cls.supported_backends:
-            return BackendType.API
+        """Mirror the logic in BaseProvider.preferred_backend(): CLI-first with API fallback."""
+        pref = getattr(prov_cfg, "preferred_backend", "cli")
+
+        # Explicit API preference — skip CLI detection
+        if pref == "api":
+            if BackendType.API in cls.supported_backends:
+                return BackendType.API
+            return cls.supported_backends[0] if cls.supported_backends else BackendType.API
+
+        # "cli" or "auto": prefer CLI when installed, fall back to API
+        if BackendType.CLI in cls.supported_backends:
+            from uai.utils.installer import is_cli_installed
+            if is_cli_installed(cls.name):
+                return BackendType.CLI
+            if BackendType.API in cls.supported_backends:
+                return BackendType.API
+
         return cls.supported_backends[0] if cls.supported_backends else BackendType.API
 
     def _explain(self, provider: str, task: TaskCapability, free_only: bool, is_free: bool) -> str:
