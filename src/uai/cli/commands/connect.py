@@ -12,8 +12,10 @@ _CLI_PROVIDERS: dict[str, dict] = {
     "gemini": {
         "display": "Google Gemini",
         "npm": "@google/gemini-cli",
-        # Command args used to trigger and verify OAuth after install
-        "auth_args": ["-m", "flash", "-p", "hi"],
+        # Gemini CLI requires an explicit API key — it does NOT do browser OAuth.
+        "auth_type": "api_key",
+        "api_key_name": "api_key",
+        "api_key_url": "https://aistudio.google.com/app/apikey",
     },
     "qwen": {
         "display": "Qwen Code",
@@ -168,9 +170,35 @@ async def _connect(provider: str) -> None:
         rprint(f"  {info['post_install']}")
         return
 
-    # ── OAuth / auth verification step ────────────────────────────────
-    auth_args = info.get("auth_args")
-    if auth_args:
+    # ── Auth step ──────────────────────────────────────────────────────
+    auth_type = info.get("auth_type", "oauth")
+
+    if auth_type == "api_key":
+        # Provider uses an API key — prompt for it directly
+        key_url = info.get("api_key_url", "")
+        key_name = info.get("api_key_name", "api_key")
+        rprint(
+            f"\n[bold]Step 2 — Authenticate {info['display']}[/bold]\n"
+            f"[dim]Get a free API key at: [cyan]{key_url}[/cyan][/dim]\n"
+        )
+        try:
+            key = input(f"  Enter your {info['display']} API key (or Enter to skip): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            key = ""
+
+        if key:
+            auth.set_credential(provider, key_name, key)
+            _set_cli_authenticated(cfg_mgr, provider, True)
+            rprint(f"\n[green]✓[/green] API key saved. {info['display']} is ready!")
+            rprint(f"\nUse [cyan]uai ask \"hello\"[/cyan] to try it.")
+        else:
+            rprint(
+                f"\n[yellow]⚠[/yellow] No key entered — {info['display']} not yet authenticated.\n"
+                f"  Run [cyan]uai connect {provider}[/cyan] again when you have your key."
+            )
+
+    elif auth_args := info.get("auth_args"):
+        # Provider uses browser OAuth via its CLI
         rprint(
             f"\n[bold]Step 2 — Authenticate {info['display']}[/bold]\n"
             f"[dim]A browser window will open. Log in, then return to this terminal.[/dim]\n"
@@ -180,7 +208,6 @@ async def _connect(provider: str) -> None:
         result = subprocess.run(cmd)   # inherits terminal — OAuth flows work naturally
 
         if result.returncode == 0:
-            # Mark as authenticated in config so is_configured() returns True
             _set_cli_authenticated(cfg_mgr, provider, True)
             rprint(f"\n[green]✓[/green] {info['display']} authenticated and ready!")
             rprint(f"\nUse [cyan]uai ask \"hello\"[/cyan] to try it.")

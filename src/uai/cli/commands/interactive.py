@@ -125,7 +125,7 @@ def _detect_installed() -> list[str]:
     return [p["name"] for p in _PROVIDERS_WITH_CLI if is_cli_installed(p["name"])]
 
 
-def _detect_ready(cfg) -> list[str]:
+def _detect_ready(cfg, auth) -> list[str]:
     """Return names of providers that are installed AND authenticated (ready to use)."""
     from uai.utils.installer import is_cli_installed
     ready = []
@@ -134,12 +134,14 @@ def _detect_ready(cfg) -> list[str]:
         if not is_cli_installed(name):
             continue
         prov_cfg = cfg.providers.get(name)
-        if prov_cfg and getattr(prov_cfg, "cli_authenticated", False):
+        cli_ok = bool(prov_cfg and getattr(prov_cfg, "cli_authenticated", False))
+        api_ok = bool(auth.get_credential(name, "api_key"))
+        if cli_ok or api_ok:
             ready.append(name)
     return ready
 
 
-def _detect_needs_auth(cfg) -> list[str]:
+def _detect_needs_auth(cfg, auth) -> list[str]:
     """Return names of providers installed but not yet authenticated."""
     from uai.utils.installer import is_cli_installed
     needs = []
@@ -148,7 +150,9 @@ def _detect_needs_auth(cfg) -> list[str]:
         if not is_cli_installed(name):
             continue
         prov_cfg = cfg.providers.get(name)
-        if not (prov_cfg and getattr(prov_cfg, "cli_authenticated", False)):
+        cli_ok = bool(prov_cfg and getattr(prov_cfg, "cli_authenticated", False))
+        api_ok = bool(auth.get_credential(name, "api_key"))
+        if not cli_ok and not api_ok:
             needs.append(name)
     return needs
 
@@ -322,8 +326,8 @@ async def interactive_mode() -> None:
     cfg = cfg_mgr.load()
 
     installed = _detect_installed()
-    ready = _detect_ready(cfg)
-    needs_auth = _detect_needs_auth(cfg)
+    ready = _detect_ready(cfg, auth)
+    needs_auth = _detect_needs_auth(cfg, auth)
 
     _print_banner(ready, needs_auth)
 
@@ -332,8 +336,8 @@ async def interactive_mode() -> None:
         await _onboarding_flow()
         cfg = cfg_mgr.load()
         installed = _detect_installed()
-        needs_auth = _detect_needs_auth(cfg)
-        ready = _detect_ready(cfg)
+        needs_auth = _detect_needs_auth(cfg, auth)
+        ready = _detect_ready(cfg, auth)
         if not installed:
             rprint(
                 "[dim]Tip: run [cyan]uai connect <provider>[/cyan] anytime to install a CLI.[/dim]\n"
@@ -351,7 +355,7 @@ async def interactive_mode() -> None:
                 rprint()
                 await _connect(name)
             cfg = cfg_mgr.load()
-            ready = _detect_ready(cfg)
+            ready = _detect_ready(cfg, auth)
 
     # Start the chat REPL
     from uai.cli.commands.chat import _chat
