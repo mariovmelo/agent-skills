@@ -106,10 +106,10 @@ class AuthManager:
 
     def _check_keyring(self) -> bool:
         try:
-            import keyring  # noqa: F401
-            kr = keyring.get_keyring()
-            # Avoid plaintext fallback keyring (no real security)
-            return "fail" not in type(kr).__name__.lower()
+            import keyring
+            # Probe with a dummy read; FailKeyring / NoKeyringError raises here
+            keyring.get_password("__uai_probe__", "__probe__")
+            return True
         except Exception:
             return False
 
