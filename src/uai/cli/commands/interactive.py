@@ -24,10 +24,10 @@ _PROVIDERS_WITH_CLI: list[dict] = [
         "cost": "free",
         "desc": "Fast, generous free tier — recommended",
         "npm": "@google/gemini-cli",
-        # self_auth=True: the Gemini CLI manages its own auth externally
-        # (GEMINI_API_KEY env/~/.gemini/settings.json or gcloud GCA).
-        # UAI must NEVER prompt for credentials — binary present = ready.
-        # Run `uai connect gemini` to see auth setup instructions.
+        # self_auth=True: the Gemini CLI manages auth via its own first-run wizard.
+        # `uai connect gemini` runs `gemini` (no args) so the user can authenticate
+        # (Google OAuth or API key) inside the Gemini CLI itself. UAI never prompts
+        # for credentials. Binary present = treated as ready by UAI.
         "self_auth": True,
     },
     {

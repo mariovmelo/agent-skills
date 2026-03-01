@@ -12,23 +12,13 @@ _CLI_PROVIDERS: dict[str, dict] = {
     "gemini": {
         "display": "Google Gemini",
         "npm": "@google/gemini-cli",
-        # IMPORTANT: The Gemini CLI does NOT do browser OAuth when called non-interactively.
-        # Auth must be configured externally — UAI never prompts for credentials.
-        # Supported methods (set before first use):
-        #   1. GEMINI_API_KEY env var  →  export GEMINI_API_KEY=<key>
-        #   2. ~/.gemini/settings.json →  { "auth": { "geminiApiKey": "<key>" } }
-        #   3. GCA (gcloud)            →  gcloud auth application-default login
-        #      then set GOOGLE_GENAI_USE_GCA=true
-        # preferred_backend MUST remain "cli"; API key routing is config-file/env only.
-        "post_install": (
-            "Set up auth (choose one):\n"
-            "    [cyan]export GEMINI_API_KEY=<your-key>[/cyan]\n"
-            "  or add to [dim]~/.gemini/settings.json[/dim]:\n"
-            '    [dim]{ "auth": { "geminiApiKey": "<your-key>" } }[/dim]\n'
-            "  or via gcloud: [cyan]gcloud auth application-default login[/cyan]\n"
-            "              then [cyan]export GOOGLE_GENAI_USE_GCA=true[/cyan]\n\n"
-            "  Get a free key at: [cyan]https://aistudio.google.com/app/apikey[/cyan]"
-        ),
+        # IMPORTANT: Use interactive_auth=True — NOT auth_args=["-p","hi"].
+        # Running `gemini -p <prompt>` non-interactively requires pre-configured auth
+        # and exits 41 if none is set. Running `gemini` (no args) triggers the
+        # first-run wizard where the user picks Google OAuth or API key themselves.
+        # UAI never prompts for credentials; the Gemini CLI wizard handles it.
+        # preferred_backend MUST remain "cli".
+        "interactive_auth": True,
     },
     "qwen": {
         "display": "Qwen Code",
@@ -181,6 +171,34 @@ async def _connect(provider: str) -> None:
     if "post_install" in info:
         rprint(f"\n[yellow]Next steps:[/yellow]")
         rprint(f"  {info['post_install']}")
+        return
+
+    # ── Gemini-style: interactive first-run wizard ──────────────────────
+    # Running `gemini` (no args) triggers the wizard that lets the user pick
+    # their auth method (Google OAuth or API key) inside the CLI itself.
+    # After the user exits the Gemini REPL, UAI checks ~/.gemini/settings.json
+    # to confirm auth was completed. UAI never prompts for credentials itself.
+    if info.get("interactive_auth"):
+        import subprocess
+        from pathlib import Path
+        rprint(
+            f"\n[bold]Step 2 — Authenticate {info['display']}[/bold]\n"
+            f"[dim]The Gemini setup wizard will open.\n"
+            f"Choose your auth method (Google account or API key), then\n"
+            f"type [cyan]/quit[/cyan] or press [cyan]Ctrl+C[/cyan] to return here.[/dim]\n"
+        )
+        subprocess.run([get_cli_path(provider)])   # inherits terminal — wizard works naturally
+
+        settings = Path.home() / ".gemini" / "settings.json"
+        if settings.exists():
+            _set_cli_authenticated(cfg_mgr, provider, True)
+            rprint(f"\n[green]✓[/green] {info['display']} authenticated and ready!")
+            rprint(f"\nUse [cyan]uai ask \"hello\"[/cyan] to try it.")
+        else:
+            rprint(
+                f"\n[yellow]⚠[/yellow] Auth not completed — [dim]~/.gemini/settings.json[/dim] not found.\n"
+                f"  Run [cyan]uai connect {provider}[/cyan] again to retry."
+            )
         return
 
     # ── Auth step ──────────────────────────────────────────────────────
