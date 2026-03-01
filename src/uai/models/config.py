@@ -14,11 +14,6 @@ class ProviderConfig(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
-class OllamaConfig(ProviderConfig):
-    base_url: str = "http://localhost:11434"
-    default_model: str | None = "qwen2.5-coder"
-
-
 class DefaultsConfig(BaseModel):
     session: str = "default"
     cost_mode: str = "free_only"          # free_only | balanced | performance
@@ -31,7 +26,7 @@ class DefaultsConfig(BaseModel):
 
 class RoutingConfig(BaseModel):
     fallback_chain: list[str] = Field(
-        default_factory=lambda: ["gemini", "qwen", "ollama", "claude", "codex"]
+        default_factory=lambda: ["gemini", "qwen", "claude", "codex"]
     )
     task_routing: dict[str, list[str]] = Field(
         default_factory=lambda: {
@@ -40,7 +35,7 @@ class RoutingConfig(BaseModel):
             "code_review":     ["qwen", "gemini", "claude"],
             "architecture":    ["gemini", "claude", "codex", "qwen"],
             "long_context":    ["gemini", "claude"],
-            "general_chat":    ["gemini", "qwen", "ollama", "claude"],
+            "general_chat":    ["gemini", "qwen", "claude"],
             "batch_processing":["qwen", "gemini"],
             "privacy_audit":   ["qwen", "gemini", "claude"],
         }
@@ -84,7 +79,6 @@ class ConfigSchema(BaseModel):
         default_factory=lambda: {
             "gemini":   ProviderConfig(preferred_backend="cli",  priority=5),
             "qwen":     ProviderConfig(preferred_backend="cli",  priority=4, daily_limit=1000),
-            "ollama":   OllamaConfig(preferred_backend="api",   priority=5),
             "claude":   ProviderConfig(preferred_backend="cli",  priority=2),
             "codex":    ProviderConfig(preferred_backend="cli",  priority=2),
             "deepseek": ProviderConfig(enabled=False, preferred_backend="api", priority=3),

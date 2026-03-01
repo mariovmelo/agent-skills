@@ -51,13 +51,6 @@ _PROVIDERS_WITH_CLI: list[dict] = [
         "desc": "GPT-4o optimised for coding tasks",
         "npm": "@openai/codex",
     },
-    {
-        "name": "ollama",
-        "display": "Ollama (local)",
-        "cost": "free",
-        "desc": "Fully offline, no account needed",
-        "script": "curl -fsSL https://ollama.ai/install.sh | sh",
-    },
 ]
 
 _PROVIDERS_API_ONLY: list[dict] = [
@@ -185,10 +178,7 @@ def _print_onboarding_table() -> None:
 
     for i, p in enumerate(_PROVIDERS_WITH_CLI, 1):
         cost = "[green]free[/green]" if p["cost"] == "free" else "[yellow]paid[/yellow]"
-        installed = is_cli_installed(p["name"]) or (
-            # Ollama: check binary
-            p["name"] == "ollama" and is_cli_installed("ollama")
-        )
+        installed = is_cli_installed(p["name"])
         status = "[green]✓ installed[/green]" if installed else "[dim]not installed[/dim]"
         table.add_row(str(i), p["display"], cost, status, p["desc"])
 

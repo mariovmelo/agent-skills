@@ -60,15 +60,6 @@ _CLI_PROVIDERS: dict[str, dict] = {
         "npm": "@openai/codex",
         "auth_args": ["exec", "--skip-git-repo-check", "hi"],
     },
-    "ollama": {
-        "display": "Ollama (local)",
-        "script": "curl -fsSL https://ollama.ai/install.sh | sh",
-        # No auth_args — ollama uses no OAuth; user pulls a model separately
-        "post_install": (
-            "Pull a model: [cyan]ollama pull qwen2.5-coder[/cyan]\n"
-            "  Then start the server: [cyan]ollama serve[/cyan]"
-        ),
-    },
 }
 
 # Providers that have no CLI — API key must be set manually in config/env
@@ -93,8 +84,6 @@ _CONNECT_INSTRUCTIONS: dict[str, str] = {
     for p, info in _CLI_PROVIDERS.items()
     if "npm" in info
 }
-_CONNECT_INSTRUCTIONS["ollama"] = _CLI_PROVIDERS["ollama"]["script"]
-
 _CREDENTIAL_KEYS: dict[str, str] = {
     p: info["key_name"] for p, info in _API_ONLY_PROVIDERS.items()
 }
@@ -279,8 +268,8 @@ def connect(
     """
     Install the CLI for an AI provider (or show how to configure API-only providers).
 
-    CLI-based providers (gemini, qwen, claude, codex, ollama) are installed via npm
-    or a shell script and use OAuth — no API key needed.
+    CLI-based providers (gemini, qwen, claude, codex) are installed via npm
+    and use OAuth — no API key needed.
 
     API-only providers (groq, deepseek) have no CLI. Set their key as an environment
     variable or add it to [cyan]~/.uai/config.yaml[/cyan].

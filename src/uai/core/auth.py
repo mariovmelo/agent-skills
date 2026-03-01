@@ -24,7 +24,6 @@ PROVIDER_CREDENTIALS: dict[str, list[dict[str, str]]] = {
         # qwen-code uses OAuth stored locally; we store the OpenRouter key as fallback
         {"key": "openrouter_key", "label": "OpenRouter API Key (optional)", "env": "OPENROUTER_API_KEY"},
     ],
-    "ollama": [],   # No auth needed — local server
     "deepseek": [
         {"key": "api_key", "label": "DeepSeek API Key", "env": "DEEPSEEK_API_KEY"},
     ],

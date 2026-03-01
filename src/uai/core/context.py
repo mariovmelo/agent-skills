@@ -211,14 +211,13 @@ class ContextManager:
         from uai.providers.claude import ClaudeProvider
         from uai.providers.codex import CodexProvider
         from uai.providers.qwen import QwenProvider
-        from uai.providers.ollama import OllamaProvider
         from uai.providers.deepseek import DeepSeekProvider
         from uai.providers.groq import GroqProvider
 
         if isinstance(provider, GeminiProvider):
             return self._format_gemini(messages)
 
-        if isinstance(provider, (ClaudeProvider, OllamaProvider, DeepSeekProvider, GroqProvider)):
+        if isinstance(provider, (ClaudeProvider, DeepSeekProvider, GroqProvider)):
             return self._format_openai(messages)
 
         # CLI-based providers — flat text

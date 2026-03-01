@@ -140,13 +140,14 @@ class RequestExecutor:
         if not history:
             return []
 
-        # Find target provider to size context correctly
-        try:
-            cls = get_provider_class(request.provider or "gemini")
-            provider = self._providers.get(request.provider or "gemini")
-            if provider is None:
-                return history[-cfg.defaults.context_window_turns * 2:]
-        except Exception:
+        # Find the target provider instance to size context correctly.
+        # Fall back to any available provider so prepare_context() is always used.
+        provider = (
+            self._providers.get(request.provider or "")
+            or next(iter(self._providers.values()), None)
+        )
+        if provider is None:
+            # No providers loaded at all — simple windowed fallback
             return history[-cfg.defaults.context_window_turns * 2:]
 
         prepared = await self._context.prepare_context(
@@ -220,13 +221,14 @@ class RequestExecutor:
             full_text += token
             yield token
 
-        # Save complete response to context
+        # Save complete response to context (estimate tokens from accumulated text)
         if request.use_context and full_text:
             self._context.add_assistant_message(
                 session,
                 content=full_text,
                 provider=provider.name,
                 model=decision.model or "",
+                tokens=self._context._estimate_tokens(full_text),
             )
 
     # ──────────────────────────────────────────────────────────────────

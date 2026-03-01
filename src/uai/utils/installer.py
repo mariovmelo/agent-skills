@@ -30,11 +30,6 @@ CLI_INSTALL_COMMANDS: dict[str, dict[str, str | list[str]]] = {
         "npm": "@qwen-code/qwen-code",
         "description": "Qwen Code CLI",
     },
-    "ollama": {
-        "check": "ollama",
-        "script": "curl -fsSL https://ollama.ai/install.sh | sh",
-        "description": "Ollama (local AI runner)",
-    },
 }
 
 

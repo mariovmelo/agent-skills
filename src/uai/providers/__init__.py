@@ -10,7 +10,6 @@ _BUILTIN: dict[str, str] = {
     "gemini":    "uai.providers.gemini:GeminiProvider",
     "codex":     "uai.providers.codex:CodexProvider",
     "qwen":      "uai.providers.qwen:QwenProvider",
-    "ollama":    "uai.providers.ollama:OllamaProvider",
     "deepseek":  "uai.providers.deepseek:DeepSeekProvider",
     "groq":      "uai.providers.groq:GroqProvider",
 }
