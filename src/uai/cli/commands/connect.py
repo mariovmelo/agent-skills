@@ -28,7 +28,9 @@ _CLI_PROVIDERS: dict[str, dict] = {
     "claude": {
         "display": "Anthropic Claude",
         "npm": "@anthropic-ai/claude-code",
-        "auth_args": ["-p", "hi", "--model", "haiku"],
+        # `claude auth login` opens a browser OAuth flow and exits 0 on success.
+        # Do NOT use -p/--print flags — non-interactive mode requires pre-existing auth.
+        "auth_args": ["auth", "login"],
     },
     "codex": {
         "display": "OpenAI Codex",
