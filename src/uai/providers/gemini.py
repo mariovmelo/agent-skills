@@ -27,9 +27,9 @@ class GeminiProvider(BaseProvider):
     context_window_tokens = 1_000_000  # Gemini 1.5+ supports 1M tokens
 
     MODELS: dict[str, dict[str, Any]] = {
-        "flash":       {"id": "gemini-2.5-flash-preview-05-20", "cost_input": 0.0, "cost_output": 0.0},
-        "pro":         {"id": "gemini-2.5-pro-preview-05-06",   "cost_input": 0.0, "cost_output": 0.0},
-        "flash-lite":  {"id": "gemini-2.0-flash-lite",          "cost_input": 0.0, "cost_output": 0.0},
+        "flash":       {"id": "gemini-2.0-flash",     "cost_input": 0.0, "cost_output": 0.0},
+        "pro":         {"id": "gemini-1.5-pro",        "cost_input": 0.0, "cost_output": 0.0},
+        "flash-lite":  {"id": "gemini-2.0-flash-lite", "cost_input": 0.0, "cost_output": 0.0},
     }
     DEFAULT_MODEL = "flash"
 
@@ -81,7 +81,15 @@ class GeminiProvider(BaseProvider):
 
         if proc.returncode != 0:
             err = stderr.decode(errors="replace").strip()
-            if "rate" in err.lower() or "quota" in err.lower():
+            err_lower = err.lower()
+            # Use specific phrases — "rate" alone matches "generate" in stack traces.
+            is_rate_limit = (
+                "resource_exhausted" in err_lower
+                or "rate limit" in err_lower
+                or "quota exceeded" in err_lower
+                or "429" in err_lower
+            )
+            if is_rate_limit:
                 raise RateLimitError(f"Gemini rate limit: {err}")
             raise ProviderError(f"Gemini CLI error (exit {proc.returncode}): {err}")
 
