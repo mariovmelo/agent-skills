@@ -77,9 +77,10 @@ class RequestExecutor:
         cfg = self._config.load()
         session = self._context.get_session(request.session_name)
 
-        # 1. Save the user message
+        # 1. Save the user message (initially with estimated token count)
+        user_msg = None
         if request.use_context:
-            self._context.add_user_message(session, request.prompt)
+            user_msg = self._context.add_user_message(session, request.prompt)
 
         # 2. Load and prepare history (pass cfg to avoid re-loading)
         history: list[Message] | None = None
@@ -105,8 +106,12 @@ class RequestExecutor:
             history=history,
         )
 
-        # 5. Save assistant response
+        # 5. Save assistant response and update user message with actual input token count
         if request.use_context:
+            # Replace the estimated token count on the user message with the actual
+            # tokens_input reported by the API (covers prompt + history overhead).
+            if user_msg and response.tokens_input > 0:
+                self._context.update_message_tokens(session, user_msg.id, response.tokens_input)
             self._context.add_assistant_message(
                 session,
                 content=response.text,

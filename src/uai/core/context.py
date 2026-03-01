@@ -100,6 +100,16 @@ class ContextManager:
             tokens=tokens,
         )
 
+    def update_message_tokens(self, session: Session, message_id: int, tokens: int) -> None:
+        """Update the stored token count for a message (e.g. replace estimate with API value)."""
+        if message_id <= 0 or tokens <= 0:
+            return
+        with self._connect(session.db_path) as conn:
+            conn.execute(
+                "UPDATE messages SET tokens = ? WHERE id = ?",
+                (tokens, message_id),
+            )
+
     def add_assistant_message(
         self,
         session: Session,
@@ -170,7 +180,11 @@ class ContextManager:
         if not all_messages:
             return []
 
-        total_tokens = sum(m.tokens or self._estimate_tokens(m.content) for m in all_messages)
+        # Use stored token count when available; fall back to estimation only when missing
+        total_tokens = sum(
+            m.tokens if m.tokens is not None else self._estimate_tokens(m.content)
+            for m in all_messages
+        )
         provider_limit = target_provider.context_window_tokens
         budget = min(int(provider_limit * 0.7), max_history_tokens)
 
