@@ -164,10 +164,11 @@ class GeminiProvider(BaseProvider):
 
     def is_configured(self) -> bool:
         from uai.utils.installer import is_cli_installed
-        # CLI path: binary must exist AND OAuth must have been completed
-        if is_cli_installed("gemini") and getattr(self._cfg, "cli_authenticated", False):
+        # Primary path: CLI installed (OAuth handled by the CLI itself on first use).
+        # Do NOT require cli_authenticated here — the Gemini CLI manages its own auth state.
+        if is_cli_installed("gemini"):
             return True
-        # API fallback: key set manually in env / config
+        # API fallback only: key explicitly set in env / config
         return bool(self._auth.get_credential("gemini", "api_key"))
 
     def estimate_cost(self, input_tokens: int, output_tokens: int, model: str | None = None) -> float:
@@ -183,12 +184,17 @@ class GeminiProvider(BaseProvider):
         history: list[Message] | None = None,
         model: str | None = None,
     ):
-        """Stream tokens from Gemini API. Falls back to CLI single-yield if no API key."""
+        """Stream tokens from Gemini. Uses CLI (preferred) or API based on preferred_backend."""
         from typing import AsyncIterator
+        # Respect preferred_backend — CLI is the default and needs no API key.
+        if self.preferred_backend() == BackendType.CLI:
+            response = await self._send_cli(prompt, history, model, timeout=120, output_json=False)
+            yield response.text
+            return
         api_key = self._auth.get_credential("gemini", "api_key")
         if not api_key:
-            # CLI fallback: single yield (can't stream subprocess output)
-            response = await self.send(prompt, history=history, model=model)
+            # No API key configured — fall back to CLI single-yield
+            response = await self._send_cli(prompt, history, model, timeout=120, output_json=False)
             yield response.text
             return
 

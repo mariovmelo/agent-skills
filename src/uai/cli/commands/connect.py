@@ -12,10 +12,10 @@ _CLI_PROVIDERS: dict[str, dict] = {
     "gemini": {
         "display": "Google Gemini",
         "npm": "@google/gemini-cli",
-        # Gemini CLI requires an explicit API key — it does NOT do browser OAuth.
-        "auth_type": "api_key",
-        "api_key_name": "api_key",
-        "api_key_url": "https://aistudio.google.com/app/apikey",
+        # IMPORTANT: Gemini CLI authenticates via Google OAuth — NO API key is needed.
+        # The CLI triggers a browser login on first use. preferred_backend MUST stay "cli".
+        # Do NOT add "auth_type": "api_key" here; that breaks the free OAuth flow.
+        "auth_args": ["-p", "hi"],
     },
     "qwen": {
         "display": "Qwen Code",
