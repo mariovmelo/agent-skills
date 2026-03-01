@@ -68,6 +68,7 @@ async def _chat(
         session=session,
         console=console,
         current_provider=current_provider,
+        free=free,
     )
 
     # Setup prompt_toolkit session
@@ -94,6 +95,18 @@ async def _chat(
             if result and result.startswith("provider:"):
                 current_provider = result.split(":", 1)[1] or None
                 ctx.current_provider = current_provider
+            elif result and result.startswith("session:"):
+                new_name = result.split(":", 1)[1]
+                if new_name:
+                    session_name = new_name
+                    session = executor.context.get_session(session_name)
+                    ctx.session_name = session_name
+                    ctx.session = session
+                    msgs = executor.context.get_messages(session)
+                    rprint(
+                        f"[dim]Switched to session: [yellow]{session_name}[/yellow]"
+                        f" ({len(msgs)} messages)[/dim]"
+                    )
             continue
 
         # Expand @file and !shell references

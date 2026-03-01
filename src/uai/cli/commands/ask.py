@@ -55,7 +55,21 @@ async def _ask(
 
     if verbose:
         rprint(f"[dim]Session: {session} | Free-only: {free} | Context: {not no_context}[/dim]")
+        try:
+            decision = await executor.router.route(
+                prompt=expanded_prompt,
+                prefer_provider=provider,
+                free_only=True if free else None,
+            )
+            rprint(
+                f"[dim]→ [cyan]{decision.provider}[/cyan]/{decision.model or 'default'}"
+                f" | {decision.task_type.value} | {decision.reason}[/dim]"
+            )
+        except Exception:
+            pass
 
+    import time
+    start = time.time()
     try:
         if raw:
             # Raw mode: print tokens directly without markdown rendering
@@ -64,6 +78,8 @@ async def _ask(
             typer.echo()
         else:
             await stream_to_live(executor.execute_stream(request), console)
+        if verbose:
+            rprint(f"[dim]⏱ {(time.time() - start) * 1000:.0f}ms[/dim]")
     except Exception as e:
         from uai.core.errors import UAIError
         if isinstance(e, UAIError):
