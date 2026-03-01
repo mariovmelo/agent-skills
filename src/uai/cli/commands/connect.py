@@ -12,10 +12,23 @@ _CLI_PROVIDERS: dict[str, dict] = {
     "gemini": {
         "display": "Google Gemini",
         "npm": "@google/gemini-cli",
-        # IMPORTANT: Gemini CLI authenticates via Google OAuth — NO API key is needed.
-        # The CLI triggers a browser login on first use. preferred_backend MUST stay "cli".
-        # Do NOT add "auth_type": "api_key" here; that breaks the free OAuth flow.
-        "auth_args": ["-p", "hi"],
+        # IMPORTANT: The Gemini CLI does NOT do browser OAuth when called non-interactively.
+        # Auth must be configured externally — UAI never prompts for credentials.
+        # Supported methods (set before first use):
+        #   1. GEMINI_API_KEY env var  →  export GEMINI_API_KEY=<key>
+        #   2. ~/.gemini/settings.json →  { "auth": { "geminiApiKey": "<key>" } }
+        #   3. GCA (gcloud)            →  gcloud auth application-default login
+        #      then set GOOGLE_GENAI_USE_GCA=true
+        # preferred_backend MUST remain "cli"; API key routing is config-file/env only.
+        "post_install": (
+            "Set up auth (choose one):\n"
+            "    [cyan]export GEMINI_API_KEY=<your-key>[/cyan]\n"
+            "  or add to [dim]~/.gemini/settings.json[/dim]:\n"
+            '    [dim]{ "auth": { "geminiApiKey": "<your-key>" } }[/dim]\n'
+            "  or via gcloud: [cyan]gcloud auth application-default login[/cyan]\n"
+            "              then [cyan]export GOOGLE_GENAI_USE_GCA=true[/cyan]\n\n"
+            "  Get a free key at: [cyan]https://aistudio.google.com/app/apikey[/cyan]"
+        ),
     },
     "qwen": {
         "display": "Qwen Code",
