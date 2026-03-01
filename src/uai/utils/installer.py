@@ -27,7 +27,7 @@ CLI_INSTALL_COMMANDS: dict[str, dict[str, str | list[str]]] = {
     },
     "qwen": {
         "check": "qwen",
-        "npm": "@qwen/qwen-code",
+        "npm": "@qwen-code/qwen-code",
         "description": "Qwen Code CLI",
     },
     "ollama": {

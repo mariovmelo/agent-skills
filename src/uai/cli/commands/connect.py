@@ -24,8 +24,18 @@ _CLI_PROVIDERS: dict[str, dict] = {
     },
     "qwen": {
         "display": "Qwen Code",
-        "npm": "@qwen/qwen-code",
-        "auth_args": ["-p", "hi"],
+        "npm": "@qwen-code/qwen-code",
+        # Qwen uses browser-based OAuth on first run (identical to Gemini's flow).
+        # Running `qwen -p hi` without prior auth exits non-zero — so we open the
+        # REPL and let the user complete sign-in interactively via the wizard.
+        # Auth success is confirmed by the presence of ~/.qwen/settings.json.
+        "interactive_auth": True,
+        "auth_hint": (
+            "The Qwen Code setup wizard will open.\n"
+            "  Choose your auth method (Qwen OAuth or API key), then\n"
+            "  type [cyan]/quit[/cyan] or press [cyan]Ctrl+C[/cyan] to return here."
+        ),
+        "auth_settings_file": ".qwen/settings.json",
     },
     "claude": {
         "display": "Anthropic Claude",
@@ -187,9 +197,10 @@ async def connect_provider(provider: str) -> bool:
     # ── Interactive auth: run the CLI itself (REPL or first-run wizard) ───
     # Used when the CLI manages auth internally via its own interactive flow.
     # Each provider optionally supplies:
-    #   auth_hint        — instructions shown before opening the CLI
-    #   auth_check_args  — sub-command to run afterwards; exit 0 = auth OK
-    #                      (if absent, ~/.gemini/settings.json is checked)
+    #   auth_hint         — instructions shown before opening the CLI
+    #   auth_check_args   — sub-command to run afterwards; exit 0 = auth OK
+    #   auth_settings_file — relative path under $HOME to check for auth success
+    #                        (default: .gemini/settings.json)
     if info.get("interactive_auth"):
         from pathlib import Path
 
@@ -213,8 +224,9 @@ async def connect_provider(provider: str) -> bool:
             )
             success = check.returncode == 0
         else:
-            # Default (Gemini): settings file written by the wizard
-            success = (Path.home() / ".gemini" / "settings.json").exists()
+            # Settings-file check: provider wrote ~/.{dir}/settings.json
+            settings_rel = info.get("auth_settings_file", ".gemini/settings.json")
+            success = (Path.home() / settings_rel).exists()
 
         if success:
             _set_cli_authenticated(cfg_mgr, provider, True)
