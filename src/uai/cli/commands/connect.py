@@ -20,6 +20,7 @@ _CLI_PROVIDERS: dict[str, dict] = {
         # UAI never prompts for credentials; the Gemini CLI wizard handles it.
         # preferred_backend MUST remain "cli".
         "interactive_auth": True,
+        # Auth success is confirmed by the presence of ~/.gemini/settings.json
     },
     "qwen": {
         "display": "Qwen Code",
@@ -29,15 +30,20 @@ _CLI_PROVIDERS: dict[str, dict] = {
     "claude": {
         "display": "Anthropic Claude",
         "npm": "@anthropic-ai/claude-code",
-        # `claude auth login` opens a browser OAuth flow.
-        # After auth, Claude's site shows an authorization code — the user must
-        # copy it and paste it here in the terminal, then press Enter.
-        "auth_args": ["auth", "login"],
-        "auth_note": (
-            "After signing in on Claude.ai:\n"
-            "  → The browser page will show an [bold]authorization code[/bold]\n"
-            "  → Copy it and [bold]paste it into this terminal[/bold], then press Enter"
+        # IMPORTANT: Do NOT use `claude auth login` — it opens a browser and then
+        # polls the server waiting for the OAuth callback. In container/headless
+        # environments this poll hangs indefinitely with no way to unblock it.
+        # Instead, open the full interactive REPL (`claude` with no args) so the
+        # user can type `/login` themselves; the REPL handles the TTY correctly.
+        # Auth success is confirmed afterwards via `claude auth status` (exit 0).
+        "interactive_auth": True,
+        "auth_hint": (
+            "The Claude Code editor will open.\n"
+            "  1. Type [cyan]/login[/cyan] and follow the prompts to sign in\n"
+            "  2. When done, type [cyan]/exit[/cyan] or press [cyan]Ctrl+C[/cyan] to return here"
         ),
+        # Run `claude auth status` after REPL exits; exit 0 means logged in
+        "auth_check_args": ["auth", "status"],
     },
     "codex": {
         "display": "OpenAI Codex",
@@ -178,28 +184,44 @@ async def connect_provider(provider: str) -> bool:
         rprint(f"  {info['post_install']}")
         return True
 
-    # ── Gemini-style: interactive first-run wizard ──────────────────────
-    # Running `gemini` (no args) triggers the wizard that lets the user pick
-    # their auth method (Google OAuth or API key) inside the CLI itself.
-    # After the user exits the Gemini REPL, UAI checks ~/.gemini/settings.json
-    # to confirm auth was completed. UAI never prompts for credentials itself.
+    # ── Interactive auth: run the CLI itself (REPL or first-run wizard) ───
+    # Used when the CLI manages auth internally via its own interactive flow.
+    # Each provider optionally supplies:
+    #   auth_hint        — instructions shown before opening the CLI
+    #   auth_check_args  — sub-command to run afterwards; exit 0 = auth OK
+    #                      (if absent, ~/.gemini/settings.json is checked)
     if info.get("interactive_auth"):
         from pathlib import Path
+
+        default_hint = (
+            "Choose your auth method (Google account or API key), then\n"
+            "  type [cyan]/quit[/cyan] or press [cyan]Ctrl+C[/cyan] to return here."
+        )
+        hint = info.get("auth_hint", default_hint)
         rprint(
             f"\n[bold]Step 2 — Authenticate {info['display']}[/bold]\n"
-            f"[dim]The Gemini setup wizard will open.\n"
-            f"Choose your auth method (Google account or API key), then\n"
-            f"type [cyan]/quit[/cyan] or press [cyan]Ctrl+C[/cyan] to return here.[/dim]\n"
+            f"[dim]{hint}[/dim]\n"
         )
         await asyncio.to_thread(_run_interactive, [get_cli_path(provider)])
 
-        settings = Path.home() / ".gemini" / "settings.json"
-        if settings.exists():
+        # ── Determine auth success ────────────────────────────────────────
+        if auth_check_args := info.get("auth_check_args"):
+            # Provider supplies a status command (e.g. `claude auth status`)
+            check = subprocess.run(
+                [get_cli_path(provider)] + auth_check_args,
+                capture_output=True,
+            )
+            success = check.returncode == 0
+        else:
+            # Default (Gemini): settings file written by the wizard
+            success = (Path.home() / ".gemini" / "settings.json").exists()
+
+        if success:
             _set_cli_authenticated(cfg_mgr, provider, True)
             rprint(f"\n[green]✓[/green] {info['display']} authenticated and ready!")
             return True
         rprint(
-            f"\n[yellow]⚠[/yellow] Auth not completed — [dim]~/.gemini/settings.json[/dim] not found.\n"
+            f"\n[yellow]⚠[/yellow] Auth not completed.\n"
             f"  Run [cyan]/connect {provider}[/cyan] again to retry."
         )
         return False
