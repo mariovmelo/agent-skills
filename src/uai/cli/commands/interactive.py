@@ -24,6 +24,10 @@ _PROVIDERS_WITH_CLI: list[dict] = [
         "cost": "free",
         "desc": "Fast, generous free tier — recommended",
         "npm": "@google/gemini-cli",
+        # self_auth=True: the Gemini CLI handles Google OAuth on its own first run.
+        # UAI must NEVER prompt for an API key or cli_authenticated flag —
+        # binary present = ready to use. API keys for Gemini are config-file/env only.
+        "self_auth": True,
     },
     {
         "name": "qwen",
@@ -133,10 +137,14 @@ def _detect_ready(cfg, auth) -> list[str]:
         name = p["name"]
         if not is_cli_installed(name):
             continue
+        # Providers marked self_auth manage their own OAuth; binary present = ready.
+        # API keys are intentionally NOT checked here — they must be set via config
+        # file or environment variable, never prompted interactively.
+        if p.get("self_auth"):
+            ready.append(name)
+            continue
         prov_cfg = cfg.providers.get(name)
-        cli_ok = bool(prov_cfg and getattr(prov_cfg, "cli_authenticated", False))
-        api_ok = bool(auth.get_credential(name, "api_key"))
-        if cli_ok or api_ok:
+        if prov_cfg and getattr(prov_cfg, "cli_authenticated", False):
             ready.append(name)
     return ready
 
@@ -149,10 +157,11 @@ def _detect_needs_auth(cfg, auth) -> list[str]:
         name = p["name"]
         if not is_cli_installed(name):
             continue
+        # self_auth providers never need UAI-side authentication.
+        if p.get("self_auth"):
+            continue
         prov_cfg = cfg.providers.get(name)
-        cli_ok = bool(prov_cfg and getattr(prov_cfg, "cli_authenticated", False))
-        api_ok = bool(auth.get_credential(name, "api_key"))
-        if not cli_ok and not api_ok:
+        if not (prov_cfg and getattr(prov_cfg, "cli_authenticated", False)):
             needs.append(name)
     return needs
 

@@ -171,33 +171,10 @@ async def _connect(provider: str) -> None:
         return
 
     # ── Auth step ──────────────────────────────────────────────────────
-    auth_type = info.get("auth_type", "oauth")
-
-    if auth_type == "api_key":
-        # Provider uses an API key — prompt for it directly
-        key_url = info.get("api_key_url", "")
-        key_name = info.get("api_key_name", "api_key")
-        rprint(
-            f"\n[bold]Step 2 — Authenticate {info['display']}[/bold]\n"
-            f"[dim]Get a free API key at: [cyan]{key_url}[/cyan][/dim]\n"
-        )
-        try:
-            key = input(f"  Enter your {info['display']} API key (or Enter to skip): ").strip()
-        except (KeyboardInterrupt, EOFError):
-            key = ""
-
-        if key:
-            auth.set_credential(provider, key_name, key)
-            _set_cli_authenticated(cfg_mgr, provider, True)
-            rprint(f"\n[green]✓[/green] API key saved. {info['display']} is ready!")
-            rprint(f"\nUse [cyan]uai ask \"hello\"[/cyan] to try it.")
-        else:
-            rprint(
-                f"\n[yellow]⚠[/yellow] No key entered — {info['display']} not yet authenticated.\n"
-                f"  Run [cyan]uai connect {provider}[/cyan] again when you have your key."
-            )
-
-    elif auth_args := info.get("auth_args"):
+    # API keys are NEVER prompted interactively. They must be set via
+    # environment variable or ~/.uai/config.yaml. CLI providers authenticate
+    # via their own OAuth flow (auth_args) or manage auth internally (self_auth).
+    if auth_args := info.get("auth_args"):
         # Provider uses browser OAuth via its CLI
         rprint(
             f"\n[bold]Step 2 — Authenticate {info['display']}[/bold]\n"
