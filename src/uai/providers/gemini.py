@@ -27,9 +27,10 @@ class GeminiProvider(BaseProvider):
     context_window_tokens = 1_000_000  # Gemini 1.5+ supports 1M tokens
 
     MODELS: dict[str, dict[str, Any]] = {
-        "flash":       {"id": "gemini-2.0-flash",     "cost_input": 0.0, "cost_output": 0.0},
-        "pro":         {"id": "gemini-1.5-pro",        "cost_input": 0.0, "cost_output": 0.0},
-        "flash-lite":  {"id": "gemini-2.0-flash-lite", "cost_input": 0.0, "cost_output": 0.0},
+        # GA stable models as of 2026 — 2.0 and 1.x are retired or retiring June 2026.
+        "flash":       {"id": "gemini-2.5-flash",      "cost_input": 0.0, "cost_output": 0.0},
+        "pro":         {"id": "gemini-2.5-pro",         "cost_input": 0.0, "cost_output": 0.0},
+        "flash-lite":  {"id": "gemini-2.5-flash-lite",  "cost_input": 0.0, "cost_output": 0.0},
     }
     DEFAULT_MODEL = "flash"
 
