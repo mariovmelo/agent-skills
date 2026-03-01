@@ -16,14 +16,15 @@ from pathlib import Path
 from uai.core.auth import AuthManager
 from uai.core.config import ConfigManager
 from uai.core.context import ContextManager
-from uai.core.fallback import FallbackChain
+from uai.core.fallback import FallbackChain, AllProvidersFailedError
 from uai.core.quota import QuotaTracker
 from uai.core.router import RouterEngine
 from uai.models.context import Message
 from uai.models.provider import BackendType
+from uai.models.quota import UsageRecord
 from uai.models.request import UAIRequest, UAIResponse
 from uai.providers import get_provider_class
-from uai.providers.base import BaseProvider
+from uai.providers.base import BaseProvider, ProviderError, RateLimitError, AuthError
 
 
 class RequestExecutor:
@@ -169,10 +170,12 @@ class RequestExecutor:
         """
         Like execute(), but yields tokens as they arrive via the provider's stream().
 
-        The full response is saved to the session context after streaming completes.
-        This is an async generator — use `async for token in executor.execute_stream(req)`.
+        Includes the same 3-layer fallback logic as FallbackChain.execute():
+          - If the primary provider fails before yielding any tokens → try alternatives
+          - If tokens are already flowing when an error occurs → save partial text, stop
+        The full (or partial) response is saved to the session context after streaming.
         """
-        cfg = self._config.load()  # Load once; passed to sub-calls to avoid re-parsing
+        cfg = self._config.load()
         session = self._context.get_session(request.session_name)
 
         # Load project-level instructions (UAI.md / .uai/instructions.md)
@@ -187,7 +190,7 @@ class RequestExecutor:
         if request.use_context:
             self._context.add_user_message(session, request.prompt)
 
-        # Prepare history (pass cfg to avoid re-loading)
+        # Prepare history
         history: list[Message] | None = None
         history_tokens = 0
         if request.use_context:
@@ -203,7 +206,7 @@ class RequestExecutor:
                 history = [sys_msg] + history
             history_tokens = sum(m.tokens or 0 for m in history) if history else 0
 
-        # Route to best provider (pass cfg to avoid re-loading)
+        # Route to best provider
         decision = await self._router.route(
             prompt=request.prompt,
             task_type=request.task_type,
@@ -213,28 +216,73 @@ class RequestExecutor:
             cfg=cfg,
         )
 
-        provider = self._providers.get(decision.provider)
-        if provider is None:
-            provider = next(iter(self._providers.values()), None)
-        if provider is None:
-            from uai.core.errors import NoProviderAvailableError
-            raise NoProviderAvailableError()
+        # Build fallback chain: primary first, then alternatives
+        chain = [decision.provider] + decision.alternatives
+        errors: dict[str, str] = {}
 
-        # Stream tokens and accumulate
-        full_text = ""
-        async for token in provider.stream(request.prompt, history=history):
-            full_text += token
-            yield token
+        for provider_name in chain:
+            provider = self._providers.get(provider_name)
+            if provider is None:
+                errors[provider_name] = "not instantiated"
+                continue
 
-        # Save complete response to context (estimate tokens from accumulated text)
-        if request.use_context and full_text:
-            self._context.add_assistant_message(
-                session,
-                content=full_text,
-                provider=provider.name,
-                model=decision.model or "",
-                tokens=self._context._estimate_tokens(full_text),
-            )
+            full_text = ""
+            tokens_yielded = 0
+
+            try:
+                async for token in provider.stream(request.prompt, history=history):
+                    full_text += token
+                    tokens_yielded += 1
+                    yield token
+
+                # Streaming completed successfully — record and save
+                self._quota.record(UsageRecord(
+                    provider=provider_name,
+                    model=decision.model or "",
+                    backend="cli",
+                    tokens_output=self._context._estimate_tokens(full_text),
+                    success=True,
+                ))
+                if request.use_context and full_text:
+                    self._context.add_assistant_message(
+                        session,
+                        content=full_text,
+                        provider=provider.name,
+                        model=decision.model or "",
+                        tokens=self._context._estimate_tokens(full_text),
+                    )
+                return  # Done — don't try remaining providers
+
+            except (RateLimitError, AuthError, ProviderError, Exception) as e:
+                errors[provider_name] = str(e)
+                self._quota.record(UsageRecord(
+                    provider=provider_name,
+                    model=decision.model or "",
+                    backend="cli",
+                    success=False,
+                    error=str(e),
+                ))
+
+                if tokens_yielded > 0:
+                    # Tokens were already sent to the user — can't retract them.
+                    # Save whatever arrived and stop.
+                    if request.use_context and full_text:
+                        self._context.add_assistant_message(
+                            session,
+                            content=full_text,
+                            provider=provider.name,
+                            model=decision.model or "",
+                            tokens=self._context._estimate_tokens(full_text),
+                        )
+                    return
+
+                # No tokens yielded yet → safe to try the next provider in chain
+                if isinstance(e, RateLimitError):
+                    self._quota.set_cooldown(provider_name, 300)
+                continue
+
+        # Every provider in the chain failed before yielding a single token
+        raise AllProvidersFailedError(errors)
 
     # ──────────────────────────────────────────────────────────────────
     # Convenience accessors used by CLI commands

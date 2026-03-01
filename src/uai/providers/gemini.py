@@ -194,15 +194,17 @@ class GeminiProvider(BaseProvider):
         model: str | None = None,
     ):
         """Stream tokens from Gemini. Uses CLI (preferred) or API based on preferred_backend."""
-        from typing import AsyncIterator
         # Respect preferred_backend — CLI is the default and needs no API key.
         if self.preferred_backend() == BackendType.CLI:
+            # CLI path: blocks until full response arrives, then yields as one chunk.
+            # Any ProviderError/TimeoutError raised here propagates to the caller,
+            # which handles fallback to alternative providers.
             response = await self._send_cli(prompt, history, model, timeout=120, output_json=False)
             yield response.text
             return
         api_key = self._auth.get_credential("gemini", "api_key")
         if not api_key:
-            # No API key configured — fall back to CLI single-yield
+            # No API key configured — fall back to CLI
             response = await self._send_cli(prompt, history, model, timeout=120, output_json=False)
             yield response.text
             return
