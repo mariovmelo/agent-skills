@@ -1,6 +1,7 @@
 """uai connect <provider> — install the provider CLI (or show manual API config tip)."""
 from __future__ import annotations
 import asyncio
+import subprocess
 import typer
 from rich import print as rprint
 from rich.console import Console
@@ -28,9 +29,15 @@ _CLI_PROVIDERS: dict[str, dict] = {
     "claude": {
         "display": "Anthropic Claude",
         "npm": "@anthropic-ai/claude-code",
-        # `claude auth login` opens a browser OAuth flow and exits 0 on success.
-        # Do NOT use -p/--print flags — non-interactive mode requires pre-existing auth.
+        # `claude auth login` opens a browser OAuth flow.
+        # After auth, Claude's site shows an authorization code — the user must
+        # copy it and paste it here in the terminal, then press Enter.
         "auth_args": ["auth", "login"],
+        "auth_note": (
+            "After signing in on Claude.ai:\n"
+            "  → The browser page will show an [bold]authorization code[/bold]\n"
+            "  → Copy it and [bold]paste it into this terminal[/bold], then press Enter"
+        ),
     },
     "codex": {
         "display": "OpenAI Codex",
@@ -85,6 +92,150 @@ def _set_cli_authenticated(cfg_mgr, provider: str, value: bool) -> None:
         cfg_mgr.save(cfg)
 
 
+def _run_interactive(cmd: list[str]) -> int:
+    """Run a CLI command with full terminal access (stdin/stdout/stderr inherited).
+
+    Uses subprocess.run so the child process gets a proper TTY — safe for OAuth
+    flows that need to display prompts and read pasted codes from the user.
+    Returns the process exit code.
+    """
+    result = subprocess.run(cmd)
+    return result.returncode
+
+
+async def connect_provider(provider: str) -> bool:
+    """
+    Install and authenticate a provider CLI.
+
+    Returns True on success, False on failure.
+    Safe to call from both the CLI (via asyncio.run) and the chat /connect command
+    (already inside an event loop). Runs auth subprocesses via asyncio.to_thread so
+    blocking TTY interaction (OAuth prompts, code paste) works without freezing the loop.
+    """
+    from uai.core.config import ConfigManager
+    from uai.utils.installer import is_cli_installed, install_cli, npm_available, get_cli_path
+
+    cfg_mgr = ConfigManager()
+    cfg_mgr.initialize()
+
+    # ── API-only provider ──────────────────────────────────────────────────
+    if provider in _API_ONLY_PROVIDERS:
+        info = _API_ONLY_PROVIDERS[provider]
+        rprint(f"\n[bold cyan]{info['display']}[/bold cyan] is an API-only provider.\n")
+        rprint(f"  Get your key at: [cyan]{info['url']}[/cyan]\n")
+        rprint("  Add it to your environment:")
+        rprint(f"    [dim]export {info['env']}=<your-key>[/dim]\n")
+        rprint("  Or add it to [cyan]~/.uai/config.yaml[/cyan]:")
+        rprint(f"    [dim]providers:\n      {provider}:\n        enabled: true\n        extra:\n          api_key: <your-key>[/dim]\n")
+        rprint("[dim]UAI will pick up the key automatically on the next run.[/dim]")
+        return True
+
+    # ── CLI-based provider ─────────────────────────────────────────────────
+    if provider not in _CLI_PROVIDERS:
+        rprint(f"[red]Unknown provider:[/red] {provider}")
+        all_providers = list(_CLI_PROVIDERS) + list(_API_ONLY_PROVIDERS)
+        rprint(f"Available: {', '.join(all_providers)}")
+        return False
+
+    info = _CLI_PROVIDERS[provider]
+    rprint(f"\n[bold cyan]Connecting {info['display']}...[/bold cyan]")
+
+    if is_cli_installed(provider):
+        rprint(f"[green]✓[/green] {info['display']} CLI is already installed.")
+    else:
+        if "npm" in info:
+            if not npm_available():
+                rprint(
+                    "[yellow]⚠[/yellow] npm not found. Install Node.js from "
+                    "[cyan]https://nodejs.org/[/cyan] and re-run."
+                )
+                return False
+            rprint(f"\nRunning: [dim]npm install -g {info['npm']}[/dim]\n")
+        elif "script" in info:
+            rprint(f"\nRunning: [dim]{info['script']}[/dim]\n")
+
+        ok = install_cli(provider)
+
+        if ok:
+            rprint(f"\n[green]✓[/green] {info['display']} CLI installed.")
+        else:
+            rprint(f"\n[red]✗[/red] Installation failed.")
+            if "npm" in info:
+                rprint(f"  Try manually: [dim]npm install -g {info['npm']}[/dim]")
+            elif "script" in info:
+                rprint(f"  Try manually: [dim]{info['script']}[/dim]")
+            return False
+
+    # Enable provider in config
+    cfg = cfg_mgr.load()
+    if provider in cfg.providers:
+        cfg.providers[provider].enabled = True
+        cfg_mgr.save(cfg)
+
+    # ── Ollama: no OAuth; just show post-install steps ─────────────────
+    if "post_install" in info:
+        rprint(f"\n[yellow]Next steps:[/yellow]")
+        rprint(f"  {info['post_install']}")
+        return True
+
+    # ── Gemini-style: interactive first-run wizard ──────────────────────
+    # Running `gemini` (no args) triggers the wizard that lets the user pick
+    # their auth method (Google OAuth or API key) inside the CLI itself.
+    # After the user exits the Gemini REPL, UAI checks ~/.gemini/settings.json
+    # to confirm auth was completed. UAI never prompts for credentials itself.
+    if info.get("interactive_auth"):
+        from pathlib import Path
+        rprint(
+            f"\n[bold]Step 2 — Authenticate {info['display']}[/bold]\n"
+            f"[dim]The Gemini setup wizard will open.\n"
+            f"Choose your auth method (Google account or API key), then\n"
+            f"type [cyan]/quit[/cyan] or press [cyan]Ctrl+C[/cyan] to return here.[/dim]\n"
+        )
+        await asyncio.to_thread(_run_interactive, [get_cli_path(provider)])
+
+        settings = Path.home() / ".gemini" / "settings.json"
+        if settings.exists():
+            _set_cli_authenticated(cfg_mgr, provider, True)
+            rprint(f"\n[green]✓[/green] {info['display']} authenticated and ready!")
+            return True
+        rprint(
+            f"\n[yellow]⚠[/yellow] Auth not completed — [dim]~/.gemini/settings.json[/dim] not found.\n"
+            f"  Run [cyan]/connect {provider}[/cyan] again to retry."
+        )
+        return False
+
+    # ── Auth step — browser OAuth via provider CLI ──────────────────────
+    # API keys are NEVER prompted interactively. They must be set via
+    # environment variable or ~/.uai/config.yaml. CLI providers authenticate
+    # via their own OAuth flow (auth_args).
+    if auth_args := info.get("auth_args"):
+        # Show provider-specific instructions if available (e.g., code-paste step)
+        auth_note = info.get("auth_note", "")
+        rprint(
+            f"\n[bold]Step 2 — Authenticate {info['display']}[/bold]\n"
+            f"[dim]A browser window will open. Sign in, then return to this terminal.[/dim]"
+            + (f"\n[dim]{auth_note}[/dim]" if auth_note else "")
+            + "\n"
+        )
+        cmd = [get_cli_path(provider)] + auth_args
+        # Use asyncio.to_thread so subprocess.run() runs in a thread pool with
+        # full TTY access — the user can type/paste the authorization code normally.
+        returncode = await asyncio.to_thread(_run_interactive, cmd)
+
+        if returncode == 0:
+            _set_cli_authenticated(cfg_mgr, provider, True)
+            rprint(f"\n[green]✓[/green] {info['display']} authenticated and ready!")
+            return True
+        rprint(
+            f"\n[yellow]⚠[/yellow] Authentication may not have completed "
+            f"(exit code {returncode}).\n"
+            f"  Run [cyan]/connect {provider}[/cyan] to retry."
+        )
+        return False
+
+    return True
+
+
 def connect(
     provider: str = typer.Argument(
         ...,
@@ -100,133 +251,6 @@ def connect(
     API-only providers (groq, deepseek) have no CLI. Set their key as an environment
     variable or add it to [cyan]~/.uai/config.yaml[/cyan].
     """
-    asyncio.run(_connect(provider))
-
-
-async def _connect(provider: str) -> None:
-    from uai.core.config import ConfigManager
-    from uai.core.auth import AuthManager
-    from uai.utils.installer import is_cli_installed, install_cli, npm_available, get_cli_path
-
-    cfg_mgr = ConfigManager()
-    cfg_mgr.initialize()
-    auth = AuthManager(cfg_mgr.config_dir)
-
-    # ── API-only provider ──────────────────────────────────────────────────
-    if provider in _API_ONLY_PROVIDERS:
-        info = _API_ONLY_PROVIDERS[provider]
-        rprint(f"\n[bold cyan]{info['display']}[/bold cyan] is an API-only provider.\n")
-        rprint(f"  Get your key at: [cyan]{info['url']}[/cyan]\n")
-        rprint("  Add it to your environment:")
-        rprint(f"    [dim]export {info['env']}=<your-key>[/dim]\n")
-        rprint("  Or add it to [cyan]~/.uai/config.yaml[/cyan]:")
-        rprint(f"    [dim]providers:\n      {provider}:\n        enabled: true\n        extra:\n          api_key: <your-key>[/dim]\n")
-        rprint("[dim]UAI will pick up the key automatically on the next run.[/dim]")
-        return
-
-    # ── CLI-based provider ─────────────────────────────────────────────────
-    if provider not in _CLI_PROVIDERS:
-        rprint(f"[red]Unknown provider: {provider}[/red]")
-        rprint(
-            f"CLI providers: {', '.join(_CLI_PROVIDERS)}\n"
-            f"API-only providers: {', '.join(_API_ONLY_PROVIDERS)}"
-        )
+    ok = asyncio.run(connect_provider(provider))
+    if not ok:
         raise typer.Exit(1)
-
-    info = _CLI_PROVIDERS[provider]
-    rprint(f"\n[bold cyan]Connecting {info['display']}...[/bold cyan]")
-
-    if is_cli_installed(provider):
-        rprint(f"[green]✓[/green] {info['display']} CLI is already installed.")
-    else:
-        # Install — process inherits terminal so output, prompts and OAuth flows work
-        if "npm" in info:
-            if not npm_available():
-                rprint(
-                    "[yellow]⚠[/yellow] npm not found. Install Node.js from "
-                    "[cyan]https://nodejs.org/[/cyan] and re-run."
-                )
-                raise typer.Exit(1)
-            rprint(f"\nRunning: [dim]npm install -g {info['npm']}[/dim]\n")
-        elif "script" in info:
-            rprint(f"\nRunning: [dim]{info['script']}[/dim]\n")
-
-        ok = install_cli(provider)
-
-        if ok:
-            rprint(f"\n[green]✓[/green] {info['display']} CLI installed.")
-        else:
-            rprint(f"\n[red]✗[/red] Installation failed.")
-            if "npm" in info:
-                rprint(f"  Try manually: [dim]npm install -g {info['npm']}[/dim]")
-            elif "script" in info:
-                rprint(f"  Try manually: [dim]{info['script']}[/dim]")
-            raise typer.Exit(1)
-
-    # Enable provider in config
-    cfg = cfg_mgr.load()
-    if provider in cfg.providers:
-        cfg.providers[provider].enabled = True
-        cfg_mgr.save(cfg)
-
-    # ── Ollama: no OAuth; just show post-install steps ─────────────────
-    if "post_install" in info:
-        rprint(f"\n[yellow]Next steps:[/yellow]")
-        rprint(f"  {info['post_install']}")
-        return
-
-    # ── Gemini-style: interactive first-run wizard ──────────────────────
-    # Running `gemini` (no args) triggers the wizard that lets the user pick
-    # their auth method (Google OAuth or API key) inside the CLI itself.
-    # After the user exits the Gemini REPL, UAI checks ~/.gemini/settings.json
-    # to confirm auth was completed. UAI never prompts for credentials itself.
-    if info.get("interactive_auth"):
-        import subprocess
-        from pathlib import Path
-        rprint(
-            f"\n[bold]Step 2 — Authenticate {info['display']}[/bold]\n"
-            f"[dim]The Gemini setup wizard will open.\n"
-            f"Choose your auth method (Google account or API key), then\n"
-            f"type [cyan]/quit[/cyan] or press [cyan]Ctrl+C[/cyan] to return here.[/dim]\n"
-        )
-        subprocess.run([get_cli_path(provider)])   # inherits terminal — wizard works naturally
-
-        settings = Path.home() / ".gemini" / "settings.json"
-        if settings.exists():
-            _set_cli_authenticated(cfg_mgr, provider, True)
-            rprint(f"\n[green]✓[/green] {info['display']} authenticated and ready!")
-            rprint(f"\nUse [cyan]uai ask \"hello\"[/cyan] to try it.")
-        else:
-            rprint(
-                f"\n[yellow]⚠[/yellow] Auth not completed — [dim]~/.gemini/settings.json[/dim] not found.\n"
-                f"  Run [cyan]uai connect {provider}[/cyan] again to retry."
-            )
-        return
-
-    # ── Auth step ──────────────────────────────────────────────────────
-    # API keys are NEVER prompted interactively. They must be set via
-    # environment variable or ~/.uai/config.yaml. CLI providers authenticate
-    # via their own OAuth flow (auth_args) or manage auth internally (self_auth).
-    if auth_args := info.get("auth_args"):
-        # Provider uses browser OAuth via its CLI
-        rprint(
-            f"\n[bold]Step 2 — Authenticate {info['display']}[/bold]\n"
-            f"[dim]A browser window will open. Log in, then return to this terminal.[/dim]\n"
-        )
-        import subprocess
-        cmd = [get_cli_path(provider)] + auth_args
-        result = subprocess.run(cmd)   # inherits terminal — OAuth flows work naturally
-
-        if result.returncode == 0:
-            _set_cli_authenticated(cfg_mgr, provider, True)
-            rprint(f"\n[green]✓[/green] {info['display']} authenticated and ready!")
-            rprint(f"\nUse [cyan]uai ask \"hello\"[/cyan] to try it.")
-        else:
-            rprint(
-                f"\n[yellow]⚠[/yellow] Authentication may not have completed "
-                f"(exit code {result.returncode})."
-            )
-            rprint(
-                f"  Run [cyan]{provider} {' '.join(auth_args)}[/cyan] to retry, "
-                f"or just type [cyan]uai ask \"hello\"[/cyan] — UAI will prompt for auth."
-            )

@@ -160,6 +160,22 @@ def build_default_registry() -> SlashCommandRegistry:
                     ctx.console.print(f"  [dim]{marker} {s.name}[/dim]")
         return "handled"
 
+    async def _connect(args: str, ctx: ChatContext) -> str | None:
+        """Install and authenticate a provider without leaving the chat."""
+        from uai.cli.commands.connect import connect_provider, _CLI_PROVIDERS, _API_ONLY_PROVIDERS
+
+        provider = args.strip().lower()
+        if not provider:
+            all_providers = list(_CLI_PROVIDERS) + list(_API_ONLY_PROVIDERS)
+            ctx.console.print(
+                f"[bold]Available providers:[/bold] {', '.join(all_providers)}\n"
+                f"[dim]Usage: /connect <provider>[/dim]"
+            )
+            return "handled"
+
+        await connect_provider(provider)
+        return "handled"
+
     registry.register(SlashCommand(
         "help", _help, "Show this help message", aliases=["h", "?"]
     ))
@@ -186,6 +202,10 @@ def build_default_registry() -> SlashCommandRegistry:
     registry.register(SlashCommand(
         "session", _session, "Show or switch active session",
         usage="/session [name]"
+    ))
+    registry.register(SlashCommand(
+        "connect", _connect, "Install and authenticate a provider",
+        usage="/connect <provider>"
     ))
 
     return registry
