@@ -11,6 +11,7 @@ Flow for a single request:
   7. Return UAIResponse
 """
 from __future__ import annotations
+import asyncio
 from pathlib import Path
 
 from uai.core.auth import AuthManager
@@ -120,6 +121,10 @@ class RequestExecutor:
                 model=response.model,
                 tokens=response.tokens_output,
             )
+            # Fire background fact extraction for core memory (Layer 3)
+            asyncio.create_task(
+                self._context.update_core_memory(session, request.prompt, response.text)
+            )
 
         return UAIResponse(
             text=response.text,
@@ -162,6 +167,7 @@ class RequestExecutor:
             strategy=cfg.defaults.context_strategy,  # type: ignore[arg-type]
             keep_recent_turns=cfg.context.keep_recent_turns,
             max_history_tokens=cfg.context.max_history_tokens,
+            current_prompt=request.prompt,
         )
         return prepared
 
@@ -250,6 +256,10 @@ class RequestExecutor:
                         provider=provider.name,
                         model=decision.model or "",
                         tokens=self._context._estimate_tokens(full_text),
+                    )
+                    # Fire background fact extraction for core memory (Layer 3)
+                    asyncio.create_task(
+                        self._context.update_core_memory(session, request.prompt, full_text)
                     )
                 return  # Done — don't try remaining providers
 
