@@ -226,22 +226,6 @@ def build_default_registry() -> SlashCommandRegistry:
         for w in warnings:
             ctx.console.print(f"[yellow]Warning: {w}[/yellow]")
 
-        if verbose:
-            try:
-                decision = await ctx.executor.router.route(  # type: ignore[attr-defined]
-                    prompt=expanded,
-                    prefer_provider=provider_override,
-                    free_only=True if free else None,
-                )
-                ctx.console.print(
-                    f"[dim]→ [cyan]{decision.provider}[/cyan]"
-                    f"/{decision.model or 'default'}"
-                    f" | {decision.task_type.value}"
-                    f" | {decision.reason}[/dim]"
-                )
-            except Exception as e:
-                ctx.console.print(f"[dim]Routing info unavailable: {e}[/dim]")
-
         request = UAIRequest(
             prompt=expanded,
             provider=provider_override,
@@ -252,14 +236,25 @@ def build_default_registry() -> SlashCommandRegistry:
         try:
             from uai.cli.streaming import StreamStatus
             from uai.cli.commands.chat import _make_on_status
+            timing: dict = {}
             status = StreamStatus()
             ctx.console.print()
-            await stream_to_live(
-                ctx.executor.execute_stream(request, on_status=_make_on_status(status)),  # type: ignore[attr-defined]
+            full_text = await stream_to_live(
+                ctx.executor.execute_stream(request, on_status=_make_on_status(status, timing)),  # type: ignore[attr-defined]
                 ctx.console,
                 live_status=status,
+                timing=timing,
             )
-            ctx.console.print()
+            routing_s = timing.get("routing_s", 0.0)
+            ttft_s = timing.get("ttft_s", 0.0)
+            stream_s = timing.get("stream_s", 0.0)
+            total_s = timing.get("total_s", 0.0)
+            ctx.console.print(
+                f"[dim]  ⏱ routing {routing_s:.1f}s"
+                f" · 1º token {ttft_s:.1f}s"
+                f" · streaming {stream_s:.1f}s"
+                f" · total {total_s:.1f}s[/dim]"
+            )
         except Exception as e:
             ctx.console.print(f"[red]Error: {e}[/red]")
         return "handled"
@@ -317,14 +312,25 @@ def build_default_registry() -> SlashCommandRegistry:
         try:
             from uai.cli.streaming import StreamStatus
             from uai.cli.commands.chat import _make_on_status
+            timing: dict = {}
             status = StreamStatus()
             ctx.console.print()
-            await stream_to_live(
-                ctx.executor.execute_stream(request, on_status=_make_on_status(status)),  # type: ignore[attr-defined]
+            full_text = await stream_to_live(
+                ctx.executor.execute_stream(request, on_status=_make_on_status(status, timing)),  # type: ignore[attr-defined]
                 ctx.console,
                 live_status=status,
+                timing=timing,
             )
-            ctx.console.print()
+            routing_s = timing.get("routing_s", 0.0)
+            ttft_s = timing.get("ttft_s", 0.0)
+            stream_s = timing.get("stream_s", 0.0)
+            total_s = timing.get("total_s", 0.0)
+            ctx.console.print(
+                f"[dim]  ⏱ routing {routing_s:.1f}s"
+                f" · 1º token {ttft_s:.1f}s"
+                f" · streaming {stream_s:.1f}s"
+                f" · total {total_s:.1f}s[/dim]"
+            )
         except Exception as e:
             ctx.console.print(f"[red]Error: {e}[/red]")
         return "handled"

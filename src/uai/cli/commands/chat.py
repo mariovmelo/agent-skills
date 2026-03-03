@@ -1,31 +1,31 @@
 """uai chat — interactive conversation session with persistent context (REPL)."""
 from __future__ import annotations
 import asyncio
-import time
 import typer
 from rich.console import Console
-from rich.markdown import Markdown
 from rich import print as rprint
 
 console = Console()
 
 
-def _make_on_status(status):
+def _make_on_status(status, timing: dict):
     """
-    Build an on_status callback that populates a StreamStatus for stream_to_live().
+    Build an on_status callback that populates a StreamStatus for stream_to_live()
+    and records per-phase timing into `timing`.
 
-    Events:
-      "routing"  decision         → updates spinner text with provider/task/complexity
-      "fallback" from, err, to   → appends a dim warning line; updates spinner
+    Events from execute_stream():
+      "routing"  decision, routing_s        — updates spinner; records routing_s
+      "fallback" from_prov, error, to_prov  — queues a warning line; updates spinner
     """
-    from uai.cli.streaming import StreamStatus
+    from rich.text import Text
 
     def on_status(event: str, *args) -> None:
         if event == "routing":
-            decision = args[0]
+            decision, routing_s = args[0], args[1]
+            timing["routing_s"] = routing_s
+
             model_tag = decision.model or "default"
             task_tag = decision.task_type.value.replace("_", " ")
-            # Extract complexity/flags from reason string (e.g. "[simple]", "[long-ctx]")
             reason = decision.reason or ""
             complexity = ""
             for tag in ("[simple]", "[medium]", "[complex]"):
@@ -33,19 +33,23 @@ def _make_on_status(status):
                     complexity = f" · {tag[1:-1]}"
                     break
             long_ctx = " · long-ctx" if "[long-ctx]" in reason else ""
-            free_tag = "[free]" if "[free]" in reason else ""
-            status.spinner.text = (
+            free_tag = "  [green][free][/green]" if "[free]" in reason else ""
+
+            # Use Text.from_markup — plain str is wrapped in Text(...) WITHOUT markup parsing
+            status.spinner.text = Text.from_markup(
                 f" → [cyan]{decision.provider}[/cyan] · {model_tag}"
-                f"  [{task_tag}{complexity}{long_ctx}]  {free_tag}"
+                f"  [dim][{task_tag}{complexity}{long_ctx}][/dim]{free_tag}"
             )
 
         elif event == "fallback":
             from_prov, error, to_prov = args[0], args[1], args[2]
-            err_short = str(error)[:70]
+            err_short = str(error)[:80]
             line = f"[dim red]  ✗ {from_prov}:[/dim red] [dim]{err_short}[/dim]"
             if to_prov:
-                line += f"[dim yellow] → tentando {to_prov}...[/dim yellow]"
-                status.spinner.text = f" ↪ {to_prov} · aguardando..."
+                line += f"[yellow] → tentando {to_prov}...[/yellow]"
+                status.spinner.text = Text.from_markup(
+                    f" ↪ [yellow]{to_prov}[/yellow] · aguardando..."
+                )
             else:
                 line += "[dim red] (sem mais provedores)[/dim red]"
             status.lines.append(line)
@@ -169,20 +173,26 @@ async def _chat(
 
         try:
             from uai.cli.streaming import StreamStatus
+            timing: dict = {}
             status = StreamStatus()
-            on_status = _make_on_status(status)
-
-            rprint()  # blank line before response
-            t0 = time.monotonic()
+            rprint()  # blank line before spinner
             full_text = await stream_to_live(
-                executor.execute_stream(request, on_status=on_status),
+                executor.execute_stream(request, on_status=_make_on_status(status, timing)),
                 console,
                 live_status=status,
+                timing=timing,
             )
-            elapsed = time.monotonic() - t0
+            routing_s = timing.get("routing_s", 0.0)
+            ttft_s = timing.get("ttft_s", 0.0)
+            stream_s = timing.get("stream_s", 0.0)
+            total_s = timing.get("total_s", 0.0)
             tokens_est = len(full_text) // 4
             rprint(
-                f"[dim]  ⏱ {elapsed:.1f}s · ~{tokens_est} tokens[/dim]"
+                f"[dim]  ⏱ routing {routing_s:.1f}s"
+                f" · 1º token {ttft_s:.1f}s"
+                f" · streaming {stream_s:.1f}s"
+                f" · total {total_s:.1f}s"
+                f" · ~{tokens_est} tokens[/dim]"
             )
         except Exception as e:
             from uai.core.errors import UAIError

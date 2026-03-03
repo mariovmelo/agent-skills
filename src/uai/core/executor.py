@@ -181,11 +181,11 @@ class RequestExecutor:
           - If tokens are already flowing when an error occurs → save partial text, stop
         The full (or partial) response is saved to the session context after streaming.
 
-        on_status: optional callable(event: str, *args) for UI updates.
-          Events emitted:
-            "routing"  decision                        — routing decision made
-            "fallback" from_provider, error, to_prov  — provider failed, trying next
+        on_status: optional callable(event: str, *args) for real-time UI updates.
+          "routing"  decision, routing_s        — decision made; routing_s = seconds taken
+          "fallback" from_prov, error, to_prov  — provider failed, trying next
         """
+        import time as _time
         cfg = self._config.load()
         session = self._context.get_session(request.session_name)
 
@@ -217,7 +217,8 @@ class RequestExecutor:
                 history = [sys_msg] + history
             history_tokens = sum(m.tokens or 0 for m in history) if history else 0
 
-        # Route to best provider
+        # Route to best provider — measure duration (includes smart classifier await)
+        _t0_route = _time.monotonic()
         decision = await self._router.route(
             prompt=request.prompt,
             task_type=request.task_type,
@@ -226,10 +227,11 @@ class RequestExecutor:
             history_tokens=history_tokens,
             cfg=cfg,
         )
+        _routing_s = _time.monotonic() - _t0_route
 
-        # Notify caller of routing decision (updates spinner text before first token)
+        # Notify caller: routing decision + how long it took
         if on_status:
-            on_status("routing", decision)
+            on_status("routing", decision, _routing_s)
 
         # Build fallback chain: primary first, then alternatives
         chain = [decision.provider] + decision.alternatives

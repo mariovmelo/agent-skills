@@ -1,7 +1,6 @@
 """uai ask "prompt" — single query with context and intelligent routing."""
 from __future__ import annotations
 import asyncio
-import time
 import typer
 from rich.console import Console
 from rich import print as rprint
@@ -37,6 +36,7 @@ async def _ask(
     from uai.models.request import UAIRequest
     from uai.cli.input_expander import expand_input
     from uai.cli.streaming import stream_to_live, StreamStatus
+    from rich.text import Text
 
     executor = RequestExecutor.create_default()
 
@@ -57,13 +57,14 @@ async def _ask(
         use_context=not no_context,
     )
 
-    # Status object: spinner text is mutated by on_status before the first token
+    timing: dict = {}
     status = StreamStatus()
-    fallback_log: list[str] = []
 
     def on_status(event: str, *args) -> None:
         if event == "routing":
-            decision = args[0]
+            decision, routing_s = args[0], args[1]
+            timing["routing_s"] = routing_s
+
             model_tag = decision.model or "default"
             task_tag = decision.task_type.value.replace("_", " ")
             reason = decision.reason or ""
@@ -73,28 +74,31 @@ async def _ask(
                     complexity = f" · {tag[1:-1]}"
                     break
             long_ctx = " · long-ctx" if "[long-ctx]" in reason else ""
-            free_tag = "[free]" if "[free]" in reason else ""
-            status.spinner.text = (
+            free_tag = "  [green][free][/green]" if "[free]" in reason else ""
+
+            # Use Text.from_markup — plain str is wrapped in Text(...) WITHOUT markup parsing
+            status.spinner.text = Text.from_markup(
                 f" → [cyan]{decision.provider}[/cyan] · {model_tag}"
-                f"  [{task_tag}{complexity}{long_ctx}]  {free_tag}"
+                f"  [dim][{task_tag}{complexity}{long_ctx}][/dim]{free_tag}"
             )
-            if verbose:
-                fallback_log.append(
-                    f"[dim]  alternatives: {', '.join(decision.alternatives) or 'none'}[/dim]"
+            if verbose and decision.alternatives:
+                status.lines.append(
+                    f"[dim]  alternatives: {', '.join(decision.alternatives)}[/dim]"
                 )
 
         elif event == "fallback":
             from_prov, error, to_prov = args[0], args[1], args[2]
-            err_short = str(error)[:70]
+            err_short = str(error)[:80]
             line = f"[dim red]  ✗ {from_prov}:[/dim red] [dim]{err_short}[/dim]"
             if to_prov:
-                line += f"[dim yellow] → tentando {to_prov}...[/dim yellow]"
-                status.spinner.text = f" ↪ {to_prov} · aguardando..."
+                line += f"[yellow] → tentando {to_prov}...[/yellow]"
+                status.spinner.text = Text.from_markup(
+                    f" ↪ [yellow]{to_prov}[/yellow] · aguardando..."
+                )
             else:
                 line += "[dim red] (sem mais provedores)[/dim red]"
             status.lines.append(line)
 
-    t0 = time.monotonic()
     try:
         if raw:
             # Raw mode: print tokens directly without markdown rendering
@@ -106,13 +110,19 @@ async def _ask(
                 executor.execute_stream(request, on_status=on_status),
                 console,
                 live_status=status,
+                timing=timing,
             )
 
-        elapsed = time.monotonic() - t0
-        # Print any verbose fallback log lines
-        for line in fallback_log:
-            rprint(line)
-        rprint(f"[dim]  ⏱ {elapsed:.1f}s[/dim]")
+        routing_s = timing.get("routing_s", 0.0)
+        ttft_s = timing.get("ttft_s", 0.0)
+        stream_s = timing.get("stream_s", 0.0)
+        total_s = timing.get("total_s", 0.0)
+        rprint(
+            f"[dim]  ⏱ routing {routing_s:.1f}s"
+            f" · 1º token {ttft_s:.1f}s"
+            f" · streaming {stream_s:.1f}s"
+            f" · total {total_s:.1f}s[/dim]"
+        )
 
     except Exception as e:
         from uai.core.errors import UAIError
