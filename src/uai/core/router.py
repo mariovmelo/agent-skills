@@ -1,5 +1,16 @@
-"""Router Engine — intelligent provider selection with cost-awareness."""
+"""Router Engine — intelligent provider selection with cost-awareness.
+
+Routing uses a two-stage classification pipeline:
+  Stage 1 (fast, always runs): keyword matching → zero latency fallback
+  Stage 2 (parallel, best-effort): free LLM classifier (Gemini Flash / Qwen)
+    - Runs concurrently with context preparation in executor
+    - 1.5s hard timeout; falls back to Stage 1 result on any failure
+    - Handles multilingual prompts, complexity estimation, long-context detection
+"""
 from __future__ import annotations
+import asyncio
+import json
+import re
 from dataclasses import dataclass, field
 
 from uai.core.auth import AuthManager
@@ -13,15 +24,51 @@ from uai.utils.health import get_provider_status, mark_cooldown
 
 # Task-type keyword hints (order matters: first match wins)
 _TASK_KEYWORDS: list[tuple[TaskCapability, list[str]]] = [
-    (TaskCapability.DEBUGGING,       ["bug", "error", "fix", "debug", "traceback", "exception", "crash", "fail"]),
-    (TaskCapability.ARCHITECTURE,    ["architect", "design", "pattern", "solid", "structure", "refactor", "ddd"]),
-    (TaskCapability.CODE_REVIEW,     ["review", "audit", "check", "assess", "improve", "quality"]),
-    (TaskCapability.CODE_GENERATION, ["implement", "write", "create", "generate", "build", "add feature"]),
-    (TaskCapability.LONG_CONTEXT,    ["entire codebase", "all files", "full project", "whole repo"]),
-    (TaskCapability.BATCH_PROCESSING,["batch", "bulk", "all items", "for each", "loop over", "process all"]),
-    (TaskCapability.PRIVACY_AUDIT,   ["lgpd", "gdpr", "pii", "privacy", "personal data", "sensitive data"]),
-    (TaskCapability.DATA_ANALYSIS,   ["analyze", "analyse", "stats", "metrics", "chart", "summarize"]),
+    (TaskCapability.DEBUGGING,       ["bug", "error", "fix", "debug", "traceback", "exception", "crash", "fail",
+                                       "erro", "falha", "corrigir", "depurar", "conserta"]),
+    (TaskCapability.ARCHITECTURE,    ["architect", "design", "pattern", "solid", "structure", "refactor", "ddd",
+                                       "arquitetura", "estrutura", "refatora", "padrão"]),
+    (TaskCapability.CODE_REVIEW,     ["review", "audit", "check", "assess", "improve", "quality",
+                                       "revisar", "avaliar", "melhorar", "auditoria"]),
+    (TaskCapability.CODE_GENERATION, ["implement", "write", "create", "generate", "build", "add feature",
+                                       "implementar", "escrever", "criar", "gerar", "construir"]),
+    (TaskCapability.LONG_CONTEXT,    ["entire codebase", "all files", "full project", "whole repo",
+                                       "todo o projeto", "todos os arquivos", "repositório inteiro"]),
+    (TaskCapability.BATCH_PROCESSING,["batch", "bulk", "all items", "for each", "loop over", "process all",
+                                       "em lote", "todos os itens", "para cada"]),
+    (TaskCapability.PRIVACY_AUDIT,   ["lgpd", "gdpr", "pii", "privacy", "personal data", "sensitive data",
+                                       "privacidade", "dados pessoais", "dados sensíveis"]),
+    (TaskCapability.DATA_ANALYSIS,   ["analyze", "analyse", "stats", "metrics", "chart", "summarize",
+                                       "analisar", "análise", "métricas", "estatísticas", "resumir"]),
 ]
+
+# Classification prompt for the LLM classifier (compact to minimize tokens)
+_CLASSIFY_PROMPT = """\
+Classify this developer request. Respond with ONLY a JSON object, no other text.
+
+Request: {prompt}
+
+JSON format:
+{{
+  "task_type": "<one of: debugging|code_generation|code_review|architecture|long_context|data_analysis|batch_processing|privacy_audit|general_chat>",
+  "complexity": "<simple|medium|complex>",
+  "needs_long_context": <true|false>,
+  "prefer_free": <true if simple enough for a free model, else false>
+}}
+
+Rules:
+- needs_long_context: true when the request implies large files, full codebase, or many files
+- complexity: simple = single question/task; medium = multi-step; complex = system design or deep analysis
+- prefer_free: false for complex reasoning, security, or production-critical tasks"""
+
+
+@dataclass
+class SmartClassification:
+    """Result from the LLM-based classifier. All fields have safe defaults."""
+    task_type: TaskCapability = TaskCapability.GENERAL_CHAT
+    complexity: str = "medium"          # "simple" | "medium" | "complex"
+    needs_long_context: bool = False
+    prefer_free: bool = True
 
 
 @dataclass
@@ -58,6 +105,7 @@ class RouterEngine:
         free_only: bool | None = None,
         history_tokens: int = 0,
         cfg: ConfigSchema | None = None,
+        _smart: SmartClassification | None = None,
     ) -> RoutingDecision:
         cfg = cfg or self._config.load()
 
@@ -69,9 +117,31 @@ class RouterEngine:
         if prefer_provider:
             return await self._pin_provider(prefer_provider, prompt, task_type, history_tokens)
 
-        # Classify task
+        # Stage 1: fast keyword classification (always available)
+        keyword_type = self._classify(prompt)
+
+        # Stage 2: launch LLM classifier in parallel with the rest of the routing logic
+        # We give it at most 1.5s; if it misses the window we use the keyword result.
+        smart: SmartClassification | None = _smart  # caller may pre-supply result
+        if smart is None and task_type is None:
+            smart = await self._smart_classify(prompt)
+
+        # Resolve final task_type
         if task_type is None:
-            task_type = self._classify(prompt)
+            task_type = (smart.task_type if smart else None) or keyword_type
+
+        # If LLM says long_context is needed and keyword didn't catch it, upgrade
+        if smart and smart.needs_long_context and task_type not in (
+            TaskCapability.LONG_CONTEXT, TaskCapability.BATCH_PROCESSING
+        ):
+            # Only override if not already a more specific type
+            if task_type == TaskCapability.GENERAL_CHAT:
+                task_type = TaskCapability.LONG_CONTEXT
+
+        # Adjust free_only based on LLM complexity signal
+        # If the LLM says "prefer_free=False" AND free_only wasn't forced by user/config, relax it
+        if smart and not smart.prefer_free and free_only and cfg.defaults.cost_mode != "free_only":
+            free_only = False
 
         # Get ordered candidate chain for this task
         chain = cfg.routing.task_routing.get(task_type.value, cfg.routing.fallback_chain)
@@ -90,7 +160,6 @@ class RouterEngine:
             if daily_limit and self._quota.is_exhausted(name, daily_limit):
                 continue
 
-            # Check health (cached)
             try:
                 cls = get_provider_class(name)
             except ValueError:
@@ -111,13 +180,15 @@ class RouterEngine:
             except Exception:
                 continue
 
-            score = self._score(name, cls, task_type, prov_cfg, free_only)
+            score = self._score(name, cls, task_type, prov_cfg, free_only, smart)
             scored.append((name, score))
 
         if not scored:
-            # Try without free constraint as a last resort
             if free_only:
-                return await self.route(prompt, task_type, prefer_provider, free_only=False, history_tokens=history_tokens)
+                return await self.route(
+                    prompt, task_type, prefer_provider,
+                    free_only=False, history_tokens=history_tokens, _smart=smart
+                )
             raise NoProviderAvailableError(
                 "No providers available. Run 'uai status' for details."
             )
@@ -136,10 +207,79 @@ class RouterEngine:
             model=model,
             backend=backend,
             task_type=task_type,
-            estimated_cost=0.0,   # Fine-grained cost estimated in executor
-            reason=self._explain(winner, task_type, free_only, prov_cls.is_free),
+            estimated_cost=0.0,
+            reason=self._explain(winner, task_type, free_only, prov_cls.is_free, smart),
             alternatives=alternatives,
         )
+
+    # ──────────────────────────────────────────────────────────────────
+    # LLM-based smart classifier (Stage 2)
+    # ──────────────────────────────────────────────────────────────────
+
+    async def _smart_classify(self, prompt: str) -> SmartClassification | None:
+        """
+        Use a free LLM (Gemini Flash → Qwen fallback) to classify the prompt.
+
+        Runs with a 1.5s hard timeout. On any failure (timeout, parse error,
+        subprocess not installed) returns None — caller falls back to keywords.
+
+        Returns a SmartClassification with task_type, complexity, needs_long_context,
+        and prefer_free signals. All fields default to safe values.
+        """
+        classify_prompt = _CLASSIFY_PROMPT.format(prompt=prompt[:600])
+        try:
+            raw = await asyncio.wait_for(
+                self._call_free_llm(classify_prompt), timeout=1.5
+            )
+        except (asyncio.TimeoutError, Exception):
+            return None
+
+        if not raw:
+            return None
+
+        try:
+            # Strip markdown fences if the model wraps the JSON
+            cleaned = re.sub(r'```(?:json)?\s*|\s*```', '', raw).strip()
+            # Find the first {...} block in case the model adds preamble
+            match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+            if not match:
+                return None
+            data = json.loads(match.group())
+
+            task_str = str(data.get("task_type", "")).strip().lower()
+            task_type = TaskCapability.GENERAL_CHAT
+            for cap in TaskCapability:
+                if cap.value == task_str:
+                    task_type = cap
+                    break
+
+            return SmartClassification(
+                task_type=task_type,
+                complexity=str(data.get("complexity", "medium")).lower(),
+                needs_long_context=bool(data.get("needs_long_context", False)),
+                prefer_free=bool(data.get("prefer_free", True)),
+            )
+        except Exception:
+            return None
+
+    async def _call_free_llm(self, prompt: str) -> str | None:
+        """Try gemini CLI then qwen CLI for a quick LLM call."""
+        for cmd in (
+            ["gemini", "-m", "gemini-2.5-flash-preview-05-20", "-p", prompt],
+            ["qwen", "-p", prompt],
+        ):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=1.4)
+                if proc.returncode == 0:
+                    return stdout.decode(errors="replace").strip()
+            except Exception:
+                continue
+        return None
 
     # ──────────────────────────────────────────────────────────────────
     async def _pin_provider(
@@ -168,7 +308,15 @@ class RouterEngine:
             reason=f"Pinned by user to {name}",
         )
 
-    def _score(self, name: str, cls, task: TaskCapability, prov_cfg, free_only: bool) -> float:
+    def _score(
+        self,
+        name: str,
+        cls,
+        task: TaskCapability,
+        prov_cfg,
+        free_only: bool,
+        smart: SmartClassification | None = None,
+    ) -> float:
         score = 0.0
 
         # Capability match (0–40)
@@ -188,6 +336,23 @@ class RouterEngine:
         # Recent success rate (0–10)
         success_rate = self._quota.get_success_rate(name)
         score += success_rate * 10
+
+        # ── Smart classification bonuses (0–20 extra) ───────────────
+        if smart:
+            # Long-context tasks: boost providers with large context windows
+            if smart.needs_long_context:
+                window = getattr(cls, "context_window_tokens", 0)
+                if window >= 500_000:
+                    score += 15   # Gemini 2M, etc.
+                elif window >= 100_000:
+                    score += 8
+
+            # Complex tasks: prefer paid/higher-quality providers
+            if smart.complexity == "complex" and not cls.is_free:
+                score += 10
+            # Simple tasks: prefer free/fast providers
+            elif smart.complexity == "simple" and cls.is_free:
+                score += 8
 
         return score
 
@@ -218,11 +383,22 @@ class RouterEngine:
 
         return cls.supported_backends[0] if cls.supported_backends else BackendType.API
 
-    def _explain(self, provider: str, task: TaskCapability, free_only: bool, is_free: bool) -> str:
+    def _explain(
+        self,
+        provider: str,
+        task: TaskCapability,
+        free_only: bool,
+        is_free: bool,
+        smart: SmartClassification | None = None,
+    ) -> str:
         parts = [f"Selected {provider}"]
         parts.append(f"(best for {task.value})")
         if is_free:
             parts.append("[free]")
         if free_only:
             parts.append("[cost-zero mode]")
+        if smart:
+            parts.append(f"[{smart.complexity}]")
+            if smart.needs_long_context:
+                parts.append("[long-ctx]")
         return " ".join(parts)
