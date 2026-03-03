@@ -1,12 +1,56 @@
 """uai chat — interactive conversation session with persistent context (REPL)."""
 from __future__ import annotations
 import asyncio
+import time
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
 from rich import print as rprint
 
 console = Console()
+
+
+def _make_on_status(status):
+    """
+    Build an on_status callback that populates a StreamStatus for stream_to_live().
+
+    Events:
+      "routing"  decision         → updates spinner text with provider/task/complexity
+      "fallback" from, err, to   → appends a dim warning line; updates spinner
+    """
+    from uai.cli.streaming import StreamStatus
+
+    def on_status(event: str, *args) -> None:
+        if event == "routing":
+            decision = args[0]
+            model_tag = decision.model or "default"
+            task_tag = decision.task_type.value.replace("_", " ")
+            # Extract complexity/flags from reason string (e.g. "[simple]", "[long-ctx]")
+            reason = decision.reason or ""
+            complexity = ""
+            for tag in ("[simple]", "[medium]", "[complex]"):
+                if tag in reason:
+                    complexity = f" · {tag[1:-1]}"
+                    break
+            long_ctx = " · long-ctx" if "[long-ctx]" in reason else ""
+            free_tag = "[free]" if "[free]" in reason else ""
+            status.spinner.text = (
+                f" → [cyan]{decision.provider}[/cyan] · {model_tag}"
+                f"  [{task_tag}{complexity}{long_ctx}]  {free_tag}"
+            )
+
+        elif event == "fallback":
+            from_prov, error, to_prov = args[0], args[1], args[2]
+            err_short = str(error)[:70]
+            line = f"[dim red]  ✗ {from_prov}:[/dim red] [dim]{err_short}[/dim]"
+            if to_prov:
+                line += f"[dim yellow] → tentando {to_prov}...[/dim yellow]"
+                status.spinner.text = f" ↪ {to_prov} · aguardando..."
+            else:
+                line += "[dim red] (sem mais provedores)[/dim red]"
+            status.lines.append(line)
+
+    return on_status
 
 
 def chat(
@@ -124,14 +168,22 @@ async def _chat(
         )
 
         try:
-            # Show provider label before streaming starts
-            provider_label_str = f"[cyan]{current_provider or 'auto'}[/cyan]"
-            rprint(f"\n{provider_label_str}")
+            from uai.cli.streaming import StreamStatus
+            status = StreamStatus()
+            on_status = _make_on_status(status)
+
+            rprint()  # blank line before response
+            t0 = time.monotonic()
             full_text = await stream_to_live(
-                executor.execute_stream(request),
+                executor.execute_stream(request, on_status=on_status),
                 console,
+                live_status=status,
             )
-            rprint()
+            elapsed = time.monotonic() - t0
+            tokens_est = len(full_text) // 4
+            rprint(
+                f"[dim]  ⏱ {elapsed:.1f}s · ~{tokens_est} tokens[/dim]"
+            )
         except Exception as e:
             from uai.core.errors import UAIError
             if isinstance(e, UAIError):

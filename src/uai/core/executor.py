@@ -172,7 +172,7 @@ class RequestExecutor:
         return prepared
 
     # ──────────────────────────────────────────────────────────────────
-    async def execute_stream(self, request: UAIRequest):
+    async def execute_stream(self, request: UAIRequest, on_status=None):
         """
         Like execute(), but yields tokens as they arrive via the provider's stream().
 
@@ -180,6 +180,11 @@ class RequestExecutor:
           - If the primary provider fails before yielding any tokens → try alternatives
           - If tokens are already flowing when an error occurs → save partial text, stop
         The full (or partial) response is saved to the session context after streaming.
+
+        on_status: optional callable(event: str, *args) for UI updates.
+          Events emitted:
+            "routing"  decision                        — routing decision made
+            "fallback" from_provider, error, to_prov  — provider failed, trying next
         """
         cfg = self._config.load()
         session = self._context.get_session(request.session_name)
@@ -222,11 +227,15 @@ class RequestExecutor:
             cfg=cfg,
         )
 
+        # Notify caller of routing decision (updates spinner text before first token)
+        if on_status:
+            on_status("routing", decision)
+
         # Build fallback chain: primary first, then alternatives
         chain = [decision.provider] + decision.alternatives
         errors: dict[str, str] = {}
 
-        for provider_name in chain:
+        for i, provider_name in enumerate(chain):
             provider = self._providers.get(provider_name)
             if provider is None:
                 errors[provider_name] = "not instantiated"
@@ -289,6 +298,11 @@ class RequestExecutor:
                 # No tokens yielded yet → safe to try the next provider in chain
                 if isinstance(e, RateLimitError):
                     self._quota.set_cooldown(provider_name, 300)
+
+                # Notify caller of fallback before continuing to next provider
+                next_prov = chain[i + 1] if i + 1 < len(chain) else None
+                if on_status:
+                    on_status("fallback", provider_name, str(e), next_prov)
                 continue
 
         # Every provider in the chain failed before yielding a single token

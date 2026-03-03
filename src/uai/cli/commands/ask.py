@@ -1,6 +1,7 @@
 """uai ask "prompt" — single query with context and intelligent routing."""
 from __future__ import annotations
 import asyncio
+import time
 import typer
 from rich.console import Console
 from rich import print as rprint
@@ -16,7 +17,7 @@ def ask(
     free: bool = typer.Option(False, "--free", help="Use only free providers"),
     no_context: bool = typer.Option(False, "--no-context", help="Ignore session history"),
     raw: bool = typer.Option(False, "--raw", help="Print raw text without markdown rendering"),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show routing details"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show extra routing details"),
 ) -> None:
     """Ask a question. Routes intelligently across all configured AI providers."""
     asyncio.run(_ask(prompt, provider, model, session, free, no_context, raw, verbose))
@@ -35,7 +36,7 @@ async def _ask(
     from uai.core.executor import RequestExecutor
     from uai.models.request import UAIRequest
     from uai.cli.input_expander import expand_input
-    from uai.cli.streaming import stream_to_live
+    from uai.cli.streaming import stream_to_live, StreamStatus
 
     executor = RequestExecutor.create_default()
 
@@ -43,6 +44,9 @@ async def _ask(
     expanded_prompt, warnings = await expand_input(prompt)
     for w in warnings:
         rprint(f"[yellow]Warning: {w}[/yellow]")
+
+    if verbose:
+        rprint(f"[dim]Session: {session} | Free-only: {free} | Context: {not no_context}[/dim]")
 
     request = UAIRequest(
         prompt=expanded_prompt,
@@ -53,33 +57,63 @@ async def _ask(
         use_context=not no_context,
     )
 
-    if verbose:
-        rprint(f"[dim]Session: {session} | Free-only: {free} | Context: {not no_context}[/dim]")
-        try:
-            decision = await executor.router.route(
-                prompt=expanded_prompt,
-                prefer_provider=provider,
-                free_only=True if free else None,
-            )
-            rprint(
-                f"[dim]→ [cyan]{decision.provider}[/cyan]/{decision.model or 'default'}"
-                f" | {decision.task_type.value} | {decision.reason}[/dim]"
-            )
-        except Exception:
-            pass
+    # Status object: spinner text is mutated by on_status before the first token
+    status = StreamStatus()
+    fallback_log: list[str] = []
 
-    import time
-    start = time.time()
+    def on_status(event: str, *args) -> None:
+        if event == "routing":
+            decision = args[0]
+            model_tag = decision.model or "default"
+            task_tag = decision.task_type.value.replace("_", " ")
+            reason = decision.reason or ""
+            complexity = ""
+            for tag in ("[simple]", "[medium]", "[complex]"):
+                if tag in reason:
+                    complexity = f" · {tag[1:-1]}"
+                    break
+            long_ctx = " · long-ctx" if "[long-ctx]" in reason else ""
+            free_tag = "[free]" if "[free]" in reason else ""
+            status.spinner.text = (
+                f" → [cyan]{decision.provider}[/cyan] · {model_tag}"
+                f"  [{task_tag}{complexity}{long_ctx}]  {free_tag}"
+            )
+            if verbose:
+                fallback_log.append(
+                    f"[dim]  alternatives: {', '.join(decision.alternatives) or 'none'}[/dim]"
+                )
+
+        elif event == "fallback":
+            from_prov, error, to_prov = args[0], args[1], args[2]
+            err_short = str(error)[:70]
+            line = f"[dim red]  ✗ {from_prov}:[/dim red] [dim]{err_short}[/dim]"
+            if to_prov:
+                line += f"[dim yellow] → tentando {to_prov}...[/dim yellow]"
+                status.spinner.text = f" ↪ {to_prov} · aguardando..."
+            else:
+                line += "[dim red] (sem mais provedores)[/dim red]"
+            status.lines.append(line)
+
+    t0 = time.monotonic()
     try:
         if raw:
             # Raw mode: print tokens directly without markdown rendering
-            async for token in executor.execute_stream(request):
+            async for token in executor.execute_stream(request, on_status=on_status):
                 typer.echo(token, nl=False)
             typer.echo()
         else:
-            await stream_to_live(executor.execute_stream(request), console)
-        if verbose:
-            rprint(f"[dim]⏱ {(time.time() - start) * 1000:.0f}ms[/dim]")
+            await stream_to_live(
+                executor.execute_stream(request, on_status=on_status),
+                console,
+                live_status=status,
+            )
+
+        elapsed = time.monotonic() - t0
+        # Print any verbose fallback log lines
+        for line in fallback_log:
+            rprint(line)
+        rprint(f"[dim]  ⏱ {elapsed:.1f}s[/dim]")
+
     except Exception as e:
         from uai.core.errors import UAIError
         if isinstance(e, UAIError):

@@ -250,10 +250,14 @@ def build_default_registry() -> SlashCommandRegistry:
             use_context=not no_context,
         )
         try:
-            ctx.console.print(f"\n[cyan]{provider_override or 'auto'}[/cyan]")
+            from uai.cli.streaming import StreamStatus
+            from uai.cli.commands.chat import _make_on_status
+            status = StreamStatus()
+            ctx.console.print()
             await stream_to_live(
-                ctx.executor.execute_stream(request),  # type: ignore[attr-defined]
+                ctx.executor.execute_stream(request, on_status=_make_on_status(status)),  # type: ignore[attr-defined]
                 ctx.console,
+                live_status=status,
             )
             ctx.console.print()
         except Exception as e:
@@ -311,10 +315,14 @@ def build_default_registry() -> SlashCommandRegistry:
             use_context=True,
         )
         try:
-            ctx.console.print(f"\n[cyan]{ctx.current_provider or 'auto'}[/cyan]")
+            from uai.cli.streaming import StreamStatus
+            from uai.cli.commands.chat import _make_on_status
+            status = StreamStatus()
+            ctx.console.print()
             await stream_to_live(
-                ctx.executor.execute_stream(request),  # type: ignore[attr-defined]
+                ctx.executor.execute_stream(request, on_status=_make_on_status(status)),  # type: ignore[attr-defined]
                 ctx.console,
+                live_status=status,
             )
             ctx.console.print()
         except Exception as e:
