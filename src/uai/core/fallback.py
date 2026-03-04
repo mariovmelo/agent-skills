@@ -45,16 +45,23 @@ class FallbackChain:
         history: list[Message] | None = None,
         max_retries_per_provider: int = 2,
         backoff: tuple[float, ...] = (5.0, 15.0, 45.0),
+        on_status=None,
     ) -> tuple[ProviderResponse, list[str]]:
         """
         Returns (ProviderResponse, providers_tried).
         Raises AllProvidersFailedError if everything fails.
+
+        on_status: optional callable(event, *args) for debug/UI events:
+          "attempt"       provider, attempt_num, backend
+          "retry"         provider, attempt_num, error, wait_s
+          "backend_switch" provider, from_backend, to_backend
+          "fallback"      from_provider, error, next_provider
         """
         chain = [decision.provider] + decision.alternatives
         errors: dict[str, str] = {}
         providers_tried: list[str] = []
 
-        for provider_name in chain:
+        for i, provider_name in enumerate(chain):
             provider = self._providers.get(provider_name)
             if provider is None:
                 errors[provider_name] = "Provider not instantiated"
@@ -69,6 +76,9 @@ class FallbackChain:
 
             # Layer 1: retry loop
             for attempt in range(1, max_retries_per_provider + 1):
+                backend_label = (preferred_backend.value if preferred_backend else "auto").upper()
+                if on_status:
+                    on_status("attempt", provider_name, attempt, backend_label)
                 try:
                     response = await provider.send(
                         prompt=prompt,
@@ -85,11 +95,17 @@ class FallbackChain:
                     errors[provider_name] = f"RATE_LIMITED: {e}"
                     self._quota.set_cooldown(provider_name, 300)
                     self._record(provider_name, None, success=False, error=str(e))
+                    next_prov = chain[i + 1] if i + 1 < len(chain) else None
+                    if on_status:
+                        on_status("fallback", provider_name, str(e), next_prov)
                     break  # No retry on rate limit — move to next provider immediately
 
                 except AuthError as e:
                     errors[provider_name] = f"AUTH_ERROR: {e}"
                     self._record(provider_name, None, success=False, error=str(e))
+                    next_prov = chain[i + 1] if i + 1 < len(chain) else None
+                    if on_status:
+                        on_status("fallback", provider_name, str(e), next_prov)
                     break  # No retry on auth error
 
                 except ProviderError as e:
@@ -102,6 +118,8 @@ class FallbackChain:
                         and preferred_backend == BackendType.API
                         and BackendType.CLI in provider.supported_backends
                     ):
+                        if on_status:
+                            on_status("backend_switch", provider_name, "API", "CLI")
                         try:
                             response = await provider.send(
                                 prompt=prompt, history=history, model=model,
@@ -114,7 +132,13 @@ class FallbackChain:
 
                     if attempt < max_retries_per_provider:
                         wait = backoff[min(attempt - 1, len(backoff) - 1)]
+                        if on_status:
+                            on_status("retry", provider_name, attempt + 1, str(e), wait)
                         await asyncio.sleep(wait)
+                    else:
+                        next_prov = chain[i + 1] if i + 1 < len(chain) else None
+                        if on_status:
+                            on_status("fallback", provider_name, str(e), next_prov)
 
         raise AllProvidersFailedError(errors)
 

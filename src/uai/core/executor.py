@@ -75,7 +75,7 @@ class RequestExecutor:
         return cls(config, auth, quota, context, router, fallback, providers)
 
     # ──────────────────────────────────────────────────────────────────
-    async def execute(self, request: UAIRequest) -> UAIResponse:
+    async def execute(self, request: UAIRequest, on_status=None) -> UAIResponse:
         cfg = self._config.load()
         session = self._context.get_session(request.session_name)
 
@@ -87,6 +87,8 @@ class RequestExecutor:
             history_tokens = sum(m.tokens or 0 for m in history) if history else 0
 
         # 2. Route to best provider (pass cfg to avoid re-loading)
+        import time as _time
+        _t0 = _time.monotonic()
         decision = await self._router.route(
             prompt=request.prompt,
             task_type=request.task_type,
@@ -95,6 +97,8 @@ class RequestExecutor:
             history_tokens=history_tokens,
             cfg=cfg,
         )
+        if on_status:
+            on_status("routing", decision, _time.monotonic() - _t0)
 
         # 3. Save user message to context
         user_msg = None
@@ -106,6 +110,7 @@ class RequestExecutor:
             prompt=request.prompt,
             decision=decision,
             history=history,
+            on_status=on_status,
         )
 
         # 5. Save assistant response and update user message with actual input token count
@@ -250,7 +255,13 @@ class RequestExecutor:
             provider = self._providers.get(provider_name)
             if provider is None:
                 errors[provider_name] = "not instantiated"
+                if on_status:
+                    on_status("fallback", provider_name, "not instantiated",
+                              chain[i + 1] if i + 1 < len(chain) else None)
                 continue
+
+            if on_status:
+                on_status("attempt", provider_name, 1, "stream")
 
             full_text = ""
             tokens_yielded = 0
