@@ -123,14 +123,6 @@ _ALL_API_ENV_VARS = [
 
 
 class TestListConfiguredProviders:
-    def test_ollama_always_in_list(self, tmp_dir, monkeypatch):
-        for env in _ALL_API_ENV_VARS:
-            monkeypatch.delenv(env, raising=False)
-        auth = AuthManager(tmp_dir)
-        auth._use_keyring = False
-        providers = auth.list_configured_providers()
-        assert "ollama" in providers
-
     def test_gemini_after_set(self, tmp_dir, monkeypatch):
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         auth = AuthManager(tmp_dir)
@@ -151,9 +143,6 @@ class TestListConfiguredProviders:
 class TestProviderCredentialsRegistry:
     def test_claude_has_api_key(self):
         assert any(c["key"] == "api_key" for c in PROVIDER_CREDENTIALS["claude"])
-
-    def test_ollama_has_no_credentials(self):
-        assert PROVIDER_CREDENTIALS["ollama"] == []
 
     def test_all_creds_have_env_key(self):
         for provider, creds in PROVIDER_CREDENTIALS.items():

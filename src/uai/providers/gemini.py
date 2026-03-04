@@ -74,6 +74,11 @@ class GeminiProvider(BaseProvider):
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
             raise ProviderError(f"Gemini CLI timed out after {timeout}s")
         except FileNotFoundError:
             raise ProviderError("Gemini CLI not found. Run: npm install -g @google/gemini-cli")

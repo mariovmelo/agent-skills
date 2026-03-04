@@ -4,7 +4,7 @@ import pytest
 from io import StringIO
 from rich.console import Console
 
-from uai.cli.streaming import show_spinner_while, stream_to_live
+from uai.cli.streaming import show_spinner_while, stream_to_live, StreamStatus
 
 
 def _make_console() -> Console:
@@ -42,6 +42,49 @@ class TestStreamToLive:
         console = _make_console()
         result = await stream_to_live(_gen("a", "b"), console, show_spinner=False)
         assert result == "ab"
+
+    async def test_timing_dict_populated(self):
+        """timing dict receives ttft_s, stream_s, total_s after streaming."""
+        console = _make_console()
+        timing: dict = {}
+        await stream_to_live(_gen("a", "b", "c"), console, timing=timing)
+        assert "ttft_s" in timing
+        assert "stream_s" in timing
+        assert "total_s" in timing
+        assert timing["total_s"] >= 0
+        assert timing["ttft_s"] >= 0
+        assert timing["stream_s"] >= 0
+        # total ≈ ttft + stream
+        assert abs(timing["total_s"] - (timing["ttft_s"] + timing["stream_s"])) < 0.01
+
+    async def test_timing_empty_stream(self):
+        """timing with no tokens: ttft_s is 0, stream_s near-zero, total valid."""
+        console = _make_console()
+        timing: dict = {}
+        await stream_to_live(_gen(), console, timing=timing)
+        assert timing["ttft_s"] == 0.0
+        assert timing["stream_s"] >= 0
+        assert timing["total_s"] >= 0
+
+    async def test_status_lines_flushed(self):
+        """Lines in StreamStatus.lines are printed before content."""
+        console = _make_console()
+        status = StreamStatus()
+        status.lines.append("warning: fallback to claude")
+
+        result = await stream_to_live(_gen("ok"), console, live_status=status)
+        assert result == "ok"
+        # After streaming, lines should be drained
+        assert status.lines == []
+
+    async def test_live_status_no_tokens_leaves_lines(self):
+        """If stream is empty, lines are never flushed (no token arrives to trigger it)."""
+        console = _make_console()
+        status = StreamStatus()
+        status.lines.append("pending")
+        await stream_to_live(_gen(), console, live_status=status)
+        # Empty stream → loop body never runs → lines stay
+        assert status.lines == ["pending"]
 
 
 @pytest.mark.asyncio

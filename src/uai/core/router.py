@@ -268,6 +268,7 @@ class RouterEngine:
             ["gemini", "-m", "gemini-2.5-flash-preview-05-20", "-p", prompt],
             ["qwen", "-p", prompt],
         ):
+            proc = None
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -277,6 +278,14 @@ class RouterEngine:
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=1.4)
                 if proc.returncode == 0:
                     return stdout.decode(errors="replace").strip()
+            except asyncio.TimeoutError:
+                if proc is not None:
+                    try:
+                        proc.kill()
+                        await proc.wait()
+                    except Exception:
+                        pass
+                continue
             except Exception:
                 continue
         return None

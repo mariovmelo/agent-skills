@@ -86,6 +86,11 @@ async def expand_input(
             if len(output) > MAX_SHELL_OUTPUT:
                 output = output[:MAX_SHELL_OUTPUT] + "\n... [truncated]"
         except asyncio.TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
             warnings.append(f"Shell command timed out ({SHELL_TIMEOUT}s): {raw_cmd}")
             continue
         except Exception as exc:

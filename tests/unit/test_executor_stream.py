@@ -179,11 +179,86 @@ class TestExecuteStream:
         executor._router.route = AsyncMock(return_value=_make_routing_decision("nonexistent"))
         request = UAIRequest(prompt="test", session_name="s", use_context=False)
 
-        from uai.core.errors import NoProviderAvailableError
+        from uai.core.fallback import AllProvidersFailedError
 
-        with pytest.raises(NoProviderAvailableError):
+        with pytest.raises(AllProvidersFailedError):
             async for _ in executor.execute_stream(request):
                 pass
+
+
+@pytest.mark.asyncio
+class TestOnStatusCallback:
+    """execute_stream() emits on_status events at routing and on fallback."""
+
+    async def test_routing_event_fired(self, tmp_dir):
+        """on_status("routing", decision, routing_s) is called exactly once."""
+        executor = _make_executor(tmp_dir)
+        request = UAIRequest(prompt="hi", session_name="s", use_context=False)
+
+        events: list[tuple] = []
+        def on_status(event, *args):
+            events.append((event, args))
+
+        async for _ in executor.execute_stream(request, on_status=on_status):
+            pass
+
+        routing_events = [e for e in events if e[0] == "routing"]
+        assert len(routing_events) == 1
+        event_name, (decision, routing_s) = routing_events[0]
+        assert decision.provider == "test-provider"
+        assert isinstance(routing_s, float) and routing_s >= 0
+
+    async def test_fallback_event_fired_on_provider_error(self, tmp_dir):
+        """on_status("fallback", ...) is called when primary fails before yielding tokens."""
+        from uai.providers.base import ProviderError
+
+        failing = MagicMock()
+        failing.name = "failing-provider"
+
+        async def _fail(*args, **kwargs):
+            raise ProviderError("timeout")
+            yield  # make it an async generator
+
+        failing.stream = _fail
+
+        good = _make_provider_mock(tokens=("ok",))
+
+        executor = _make_executor(tmp_dir)
+        # Override provider registry so both providers are accessible by name
+        executor._providers = {"failing-provider": failing, "good-provider": good}
+        executor._router.route = AsyncMock(return_value=RoutingDecision(
+            provider="failing-provider",
+            model="m",
+            backend=BackendType.API,
+            task_type=TaskCapability.GENERAL_CHAT,
+            estimated_cost=0.0,
+            reason="test",
+            alternatives=["good-provider"],
+        ))
+
+        events: list[tuple] = []
+        tokens: list[str] = []
+        async for t in executor.execute_stream(request=UAIRequest(
+            prompt="hi", session_name="s", use_context=False
+        ), on_status=lambda ev, *a: events.append((ev, a))):
+            tokens.append(t)
+
+        fallback_events = [e for e in events if e[0] == "fallback"]
+        assert len(fallback_events) == 1
+        _, (from_prov, error_str, to_prov) = fallback_events[0]
+        assert from_prov == "failing-provider"
+        assert "timeout" in error_str
+        assert to_prov == "good-provider"
+        assert "".join(tokens) == "ok"
+
+    async def test_no_on_status_works(self, tmp_dir):
+        """on_status=None (default) does not crash."""
+        executor = _make_executor(tmp_dir)
+        request = UAIRequest(prompt="hi", session_name="s", use_context=False)
+        tokens = []
+        async for t in executor.execute_stream(request):
+            tokens.append(t)
+        assert tokens == ["hello", " ", "world"]
 
 
 class TestConfigCaching:

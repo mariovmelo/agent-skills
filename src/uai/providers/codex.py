@@ -83,6 +83,11 @@ class CodexProvider(BaseProvider):
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
             raise ProviderError(f"Codex CLI timed out after {timeout}s")
         except FileNotFoundError:
             raise ProviderError("Codex CLI not found. Install: npm install -g @openai/codex")

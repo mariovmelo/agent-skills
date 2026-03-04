@@ -127,12 +127,11 @@ class ContextManager:
         for db_file in self._dir.glob("*.db"):
             name = db_file.stem
             try:
-                conn = sqlite3.connect(db_file)
-                row = conn.execute(
-                    "SELECT COUNT(*), COALESCE(SUM(COALESCE(tokens,0)),0) FROM messages"
-                ).fetchone()
-                meta = dict(conn.execute("SELECT key, value FROM metadata").fetchall())
-                conn.close()
+                with sqlite3.connect(db_file) as conn:
+                    row = conn.execute(
+                        "SELECT COUNT(*), COALESCE(SUM(COALESCE(tokens,0)),0) FROM messages"
+                    ).fetchone()
+                    meta = dict(conn.execute("SELECT key, value FROM metadata").fetchall())
                 infos.append(SessionInfo(
                     name=name,
                     created_at=datetime.fromisoformat(meta.get("created_at", "2026-01-01")),
@@ -224,18 +223,17 @@ class ContextManager:
 
     def get_messages(self, session: Session, limit: int | None = None) -> list[Message]:
         """Return all (or last N) messages, excluding SUMMARY placeholders."""
-        conn = self._connect(session.db_path)
-        query = "SELECT id, role, content, provider, model, tokens, timestamp FROM messages ORDER BY id"
-        if limit:
-            query = (
-                "SELECT id, role, content, provider, model, tokens, timestamp "
-                "FROM messages ORDER BY id DESC LIMIT ? "
-            )
-            rows = conn.execute(query, (limit,)).fetchall()
-            rows = list(reversed(rows))
-        else:
-            rows = conn.execute(query).fetchall()
-        conn.close()
+        with self._connect(session.db_path) as conn:
+            query = "SELECT id, role, content, provider, model, tokens, timestamp FROM messages ORDER BY id"
+            if limit:
+                query = (
+                    "SELECT id, role, content, provider, model, tokens, timestamp "
+                    "FROM messages ORDER BY id DESC LIMIT ? "
+                )
+                rows = conn.execute(query, (limit,)).fetchall()
+                rows = list(reversed(rows))
+            else:
+                rows = conn.execute(query).fetchall()
         return [self._row_to_message(r) for r in rows]
 
     def clear_messages(self, session: Session) -> None:
@@ -271,19 +269,18 @@ class ContextManager:
             return []
 
         try:
-            conn = self._connect(session.db_path)
-            rows = conn.execute(
-                """
-                SELECT m.id, m.role, m.content, m.provider, m.model, m.tokens, m.timestamp
-                FROM message_fts f
-                JOIN messages m ON m.id = f.rowid
-                WHERE message_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (safe_query, limit),
-            ).fetchall()
-            conn.close()
+            with self._connect(session.db_path) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT m.id, m.role, m.content, m.provider, m.model, m.tokens, m.timestamp
+                    FROM message_fts f
+                    JOIN messages m ON m.id = f.rowid
+                    WHERE message_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (safe_query, limit),
+                ).fetchall()
             return [self._row_to_message(r) for r in rows]
         except Exception:
             return []
@@ -645,6 +642,7 @@ class ContextManager:
         Returns None on any failure.
         """
         # Try gemini CLI first (free, no auth needed if installed)
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 "gemini", "-m", "gemini-2.5-flash-preview-05-20", "-p", prompt,
@@ -654,10 +652,18 @@ class ContextManager:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
             if proc.returncode == 0:
                 return stdout.decode(errors="replace").strip()
+        except asyncio.TimeoutError:
+            if proc is not None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
         except Exception:
             pass
 
         # Try qwen CLI fallback
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 "qwen", "-p", prompt,
@@ -667,6 +673,13 @@ class ContextManager:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
             if proc.returncode == 0:
                 return stdout.decode(errors="replace").strip()
+        except asyncio.TimeoutError:
+            if proc is not None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
         except Exception:
             pass
 

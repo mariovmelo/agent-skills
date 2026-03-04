@@ -122,9 +122,10 @@ class RequestExecutor:
                 tokens=response.tokens_output,
             )
             # Fire background fact extraction for core memory (Layer 3)
-            asyncio.create_task(
+            _task = asyncio.create_task(
                 self._context.update_core_memory(session, request.prompt, response.text)
             )
+            _task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
         return UAIResponse(
             text=response.text,
@@ -269,9 +270,10 @@ class RequestExecutor:
                         tokens=self._context._estimate_tokens(full_text),
                     )
                     # Fire background fact extraction for core memory (Layer 3)
-                    asyncio.create_task(
+                    _task = asyncio.create_task(
                         self._context.update_core_memory(session, request.prompt, full_text)
                     )
+                    _task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
                 return  # Done — don't try remaining providers
 
             except (RateLimitError, AuthError, ProviderError, Exception) as e:
