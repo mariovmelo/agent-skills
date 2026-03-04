@@ -652,7 +652,7 @@ def build_default_registry() -> SlashCommandRegistry:
             return "handled"
 
         if len(parts) < 2:
-            ctx.console.print("[dim]Usage: /access <provider> <readonly|readwrite>[/dim]")
+            ctx.console.print("[dim]Usage: /access <provider|all> <readonly|readwrite>[/dim]")
             return "handled"
 
         provider_name, level = parts[0].lower(), parts[1].lower()
@@ -660,16 +660,30 @@ def build_default_registry() -> SlashCommandRegistry:
             ctx.console.print("[red]Level must be 'readonly' or 'readwrite'.[/red]")
             return "handled"
 
-        try:
-            ctx.executor.config.set(  # type: ignore[attr-defined]
-                f"providers.{provider_name}.file_access", level
-            )
-            fa_display = "[dim]readonly[/dim]" if level == "readonly" else "[green]readwrite[/green]"
-            ctx.console.print(
-                f"[green]✓[/green] [cyan]{provider_name}[/cyan] → file_access: {fa_display}"
-            )
-        except Exception as e:
-            ctx.console.print(f"[red]Error: {e}[/red]")
+        fa_display = "[dim]readonly[/dim]" if level == "readonly" else "[green]readwrite[/green]"
+
+        if provider_name == "all":
+            cfg = ctx.executor.config.load()  # type: ignore[attr-defined]
+            providers_updated: list[str] = []
+            for name in cfg.providers:
+                try:
+                    ctx.executor.config.set(f"providers.{name}.file_access", level)  # type: ignore[attr-defined]
+                    providers_updated.append(name)
+                except Exception as e:
+                    ctx.console.print(f"[red]  ✗ {name}: {e}[/red]")
+            if providers_updated:
+                names = ", ".join(f"[cyan]{n}[/cyan]" for n in providers_updated)
+                ctx.console.print(f"[green]✓[/green] {names} → file_access: {fa_display}")
+        else:
+            try:
+                ctx.executor.config.set(  # type: ignore[attr-defined]
+                    f"providers.{provider_name}.file_access", level
+                )
+                ctx.console.print(
+                    f"[green]✓[/green] [cyan]{provider_name}[/cyan] → file_access: {fa_display}"
+                )
+            except Exception as e:
+                ctx.console.print(f"[red]Error: {e}[/red]")
 
         return "handled"
 
@@ -736,8 +750,8 @@ def build_default_registry() -> SlashCommandRegistry:
         usage="/providers [list|detail <name>|<name>]"
     ))
     registry.register(SlashCommand(
-        "access", _access, "View or set file access permission per provider",
-        usage="/access [<provider> <readonly|readwrite>]"
+        "access", _access, "View or set file access permission per provider (use 'all' for bulk)",
+        usage="/access [<provider|all> <readonly|readwrite>]"
     ))
 
     return registry
