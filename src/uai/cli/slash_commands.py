@@ -584,6 +584,9 @@ def build_default_registry() -> SlashCommandRegistry:
                 if prov_cfg:
                     ctx.console.print(f"  Priority:     {prov_cfg.priority}")
                     ctx.console.print(f"  Backend:      {prov_cfg.preferred_backend}")
+                    fa = getattr(prov_cfg, "file_access", "readwrite")
+                    fa_display = "[dim]readonly[/dim] (cannot write files)" if fa == "readonly" else "[green]readwrite[/green] (can apply changes)"
+                    ctx.console.print(f"  File access:  {fa_display}")
                     if prov_cfg.daily_limit:
                         ctx.console.print(f"  Daily limit:  {prov_cfg.daily_limit}")
             except (ValueError, Exception) as e:
@@ -594,6 +597,7 @@ def build_default_registry() -> SlashCommandRegistry:
             table.add_column("Provider", style="cyan")
             table.add_column("Free")
             table.add_column("Context")
+            table.add_column("File Access")
             table.add_column("Status")
             for name in list_providers():
                 try:
@@ -603,7 +607,9 @@ def build_default_registry() -> SlashCommandRegistry:
                     free_tag = "[green]yes[/green]" if cls.is_free else "[yellow]paid[/yellow]"
                     ctx_k = f"{cls.context_window_tokens // 1000}K"
                     status = "[green]enabled[/green]" if enabled else "[dim]disabled[/dim]"
-                    table.add_row(name, free_tag, ctx_k, status)
+                    fa = getattr(prov_cfg, "file_access", "readwrite") if prov_cfg else "readwrite"
+                    fa_tag = "[dim]readonly[/dim]" if fa == "readonly" else "[green]readwrite[/green]"
+                    table.add_row(name, free_tag, ctx_k, fa_tag, status)
                 except Exception:
                     pass
             ctx.console.print(table)
@@ -618,6 +624,52 @@ def build_default_registry() -> SlashCommandRegistry:
         else:
             # Treat bare arg as provider name shorthand: /providers claude
             _show_detail(sub)
+
+        return "handled"
+
+    async def _access(args: str, ctx: ChatContext) -> str | None:
+        """Set file_access permission for a provider: /access <provider> <readonly|readwrite>."""
+        parts = args.strip().split()
+
+        # No args: show current permissions for all providers
+        if not parts:
+            cfg = ctx.executor.config.load()  # type: ignore[attr-defined]
+            table = Table(title="File Access Permissions", show_header=True, header_style="bold cyan")
+            table.add_column("Provider", style="cyan")
+            table.add_column("File Access")
+            table.add_column("Meaning")
+            for name, prov_cfg in cfg.providers.items():
+                fa = getattr(prov_cfg, "file_access", "readwrite")
+                if fa == "readonly":
+                    fa_tag = "[dim]readonly[/dim]"
+                    meaning = "can read files · cannot apply changes"
+                else:
+                    fa_tag = "[green]readwrite[/green]"
+                    meaning = "can read and apply file changes"
+                table.add_row(name, fa_tag, meaning)
+            ctx.console.print(table)
+            ctx.console.print("[dim]Usage: /access <provider> <readonly|readwrite>[/dim]")
+            return "handled"
+
+        if len(parts) < 2:
+            ctx.console.print("[dim]Usage: /access <provider> <readonly|readwrite>[/dim]")
+            return "handled"
+
+        provider_name, level = parts[0].lower(), parts[1].lower()
+        if level not in ("readonly", "readwrite"):
+            ctx.console.print("[red]Level must be 'readonly' or 'readwrite'.[/red]")
+            return "handled"
+
+        try:
+            ctx.executor.config.set(  # type: ignore[attr-defined]
+                f"providers.{provider_name}.file_access", level
+            )
+            fa_display = "[dim]readonly[/dim]" if level == "readonly" else "[green]readwrite[/green]"
+            ctx.console.print(
+                f"[green]✓[/green] [cyan]{provider_name}[/cyan] → file_access: {fa_display}"
+            )
+        except Exception as e:
+            ctx.console.print(f"[red]Error: {e}[/red]")
 
         return "handled"
 
@@ -682,6 +734,10 @@ def build_default_registry() -> SlashCommandRegistry:
     registry.register(SlashCommand(
         "providers", _providers, "List providers or show detail",
         usage="/providers [list|detail <name>|<name>]"
+    ))
+    registry.register(SlashCommand(
+        "access", _access, "View or set file access permission per provider",
+        usage="/access [<provider> <readonly|readwrite>]"
     ))
 
     return registry
