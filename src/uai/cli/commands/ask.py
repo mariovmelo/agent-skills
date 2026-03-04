@@ -60,12 +60,27 @@ async def _ask(
     timing: dict = {}
     status = StreamStatus()
 
+    def _resolve_model(decision) -> str:
+        alias = decision.model
+        try:
+            from uai.providers import get_provider_class
+            prov_cls = get_provider_class(decision.provider)
+            if alias is None:
+                alias = getattr(prov_cls, "DEFAULT_MODEL", None)
+            models = getattr(prov_cls, "MODELS", {})
+            if alias and alias in models:
+                return models[alias].get("id", alias)
+        except Exception:
+            pass
+        return alias or "default"
+
     def on_status(event: str, *args) -> None:
         if event == "routing":
             decision, routing_s = args[0], args[1]
             timing["routing_s"] = routing_s
 
-            model_tag = decision.model or "default"
+            backend = decision.backend.value.upper()   # "CLI" or "API"
+            model_display = _resolve_model(decision)
             task_tag = decision.task_type.value.replace("_", " ")
             reason = decision.reason or ""
             complexity = ""
@@ -78,7 +93,7 @@ async def _ask(
 
             # Use Text.from_markup — plain str is wrapped in Text(...) WITHOUT markup parsing
             status.spinner.text = Text.from_markup(
-                f" → [cyan]{decision.provider}[/cyan] · {model_tag}"
+                f" → [cyan]{decision.provider} {backend}[/cyan] · {model_display}"
                 f"  [dim][{task_tag}{complexity}{long_ctx}][/dim]{free_tag}"
             )
             if verbose and decision.alternatives:
