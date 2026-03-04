@@ -1,6 +1,7 @@
 """uai chat — interactive conversation session with persistent context (REPL)."""
 from __future__ import annotations
 import asyncio
+import time as _time
 import typer
 from rich.console import Console
 from rich import print as rprint
@@ -8,7 +9,7 @@ from rich import print as rprint
 console = Console()
 
 
-def _make_on_status(status, timing: dict):
+def _make_on_status(status, timing: dict, debug: bool = False, debug_trace: list | None = None, t0: float | None = None):
     """
     Build an on_status callback that populates a StreamStatus for stream_to_live()
     and records per-phase timing into `timing`.
@@ -18,6 +19,7 @@ def _make_on_status(status, timing: dict):
       "fallback" from_prov, error, to_prov  — queues a warning line; updates spinner
     """
     from rich.text import Text
+    _t0 = t0 if t0 is not None else _time.monotonic()
 
     def _resolve_model(decision) -> str:
         """Return the most readable model label for display."""
@@ -35,6 +37,8 @@ def _make_on_status(status, timing: dict):
         return alias or "default"
 
     def on_status(event: str, *args) -> None:
+        elapsed = _time.monotonic() - _t0
+
         if event == "routing":
             decision, routing_s = args[0], args[1]
             timing["routing_s"] = routing_s
@@ -57,6 +61,19 @@ def _make_on_status(status, timing: dict):
                 f" → [cyan]{decision.provider} {backend}[/cyan] · {model_display}"
                 f"  [dim][{task_tag}{complexity}{long_ctx}][/dim]{free_tag}{ro_tag}"
             )
+            if debug and debug_trace is not None:
+                debug_trace.append({
+                    "event": "routing",
+                    "elapsed_s": elapsed,
+                    "routing_s": routing_s,
+                    "provider": decision.provider,
+                    "model": model_display,
+                    "backend": backend,
+                    "task_type": task_tag,
+                    "reason": reason,
+                    "alternatives": decision.alternatives,
+                    "file_access": getattr(decision, "file_access", "readwrite"),
+                })
 
         elif event == "fallback":
             from_prov, error, to_prov = args[0], args[1], args[2]
@@ -70,6 +87,42 @@ def _make_on_status(status, timing: dict):
             else:
                 line += "[dim red] (sem mais provedores)[/dim red]"
             status.lines.append(line)
+            if debug and debug_trace is not None:
+                debug_trace.append({
+                    "event": "fallback",
+                    "elapsed_s": elapsed,
+                    "from_provider": from_prov,
+                    "error": str(error),
+                    "next_provider": to_prov,
+                })
+
+        elif event == "attempt" and debug and debug_trace is not None:
+            debug_trace.append({
+                "event": "attempt",
+                "elapsed_s": elapsed,
+                "provider": args[0],
+                "attempt": args[1] if len(args) > 1 else 1,
+                "backend": args[2] if len(args) > 2 else "?",
+            })
+
+        elif event == "retry" and debug and debug_trace is not None:
+            debug_trace.append({
+                "event": "retry",
+                "elapsed_s": elapsed,
+                "provider": args[0],
+                "attempt": args[1] if len(args) > 1 else "?",
+                "error": args[2] if len(args) > 2 else "?",
+                "wait_s": args[3] if len(args) > 3 else 0,
+            })
+
+        elif event == "backend_switch" and debug and debug_trace is not None:
+            debug_trace.append({
+                "event": "backend_switch",
+                "elapsed_s": elapsed,
+                "provider": args[0],
+                "from_backend": args[1] if len(args) > 1 else "?",
+                "to_backend": args[2] if len(args) > 2 else "cli",
+            })
 
     return on_status
 
@@ -80,6 +133,7 @@ def chat(
     free: bool = typer.Option(False, "--free", help="Use only free providers"),
     new: bool = typer.Option(False, "--new", help="Start a fresh session (clears history)"),
     resume: bool = typer.Option(False, "--resume", "-r", help="Resume the most recent session"),
+    debug: bool = typer.Option(False, "--debug", "-d", help="Show detailed debug trace after each response"),
 ) -> None:
     """
     Start an interactive chat session with persistent context.
@@ -87,7 +141,7 @@ def chat(
     Your conversation is saved across sessions. Switch providers mid-chat
     with /provider <name>. Type /help for all commands.
     """
-    asyncio.run(_chat(session, provider, free, new, resume))
+    asyncio.run(_chat(session, provider, free, new, resume, debug))
 
 
 async def _chat(
@@ -96,6 +150,7 @@ async def _chat(
     free: bool,
     new: bool,
     resume: bool,
+    debug: bool = False,
 ) -> None:
     from uai.core.executor import RequestExecutor
     from uai.models.request import UAIRequest
@@ -120,7 +175,8 @@ async def _chat(
         rprint(f"[dim]Session '{session_name}' cleared.[/dim]")
 
     msgs = executor.context.get_messages(session)
-    rprint(f"\n[bold cyan]UAI Chat[/bold cyan] — session: [yellow]{session_name}[/yellow]")
+    debug_tag = "  [yellow][debug][/yellow]" if debug else ""
+    rprint(f"\n[bold cyan]UAI Chat[/bold cyan] — session: [yellow]{session_name}[/yellow]{debug_tag}")
     rprint(f"[dim]{len(msgs)} messages in history. Type /help for commands, Ctrl+C or /exit to quit.[/dim]\n")
 
     current_provider = forced_provider
@@ -192,9 +248,15 @@ async def _chat(
             from uai.cli.streaming import StreamStatus
             timing: dict = {}
             status = StreamStatus()
+            _debug_trace: list = []
+            _t0 = _time.monotonic()
             rprint()  # blank line before spinner
+            on_status_cb = _make_on_status(
+                status, timing,
+                debug=debug, debug_trace=_debug_trace, t0=_t0,
+            )
             full_text = await stream_to_live(
-                executor.execute_stream(request, on_status=_make_on_status(status, timing)),
+                executor.execute_stream(request, on_status=on_status_cb),
                 console,
                 live_status=status,
                 timing=timing,
@@ -211,6 +273,9 @@ async def _chat(
                 f" · total {total_s:.1f}s"
                 f" · ~{tokens_est} tokens[/dim]"
             )
+            if debug:
+                from uai.cli.commands.ask import _print_debug_panel
+                _print_debug_panel(_debug_trace, _time.monotonic() - _t0)
 
             # Handle diffs embedded in response
             from uai.cli.edit_applier import parse_edit_plan, show_edit_plan, apply_edit_plan
@@ -224,6 +289,9 @@ async def _chat(
 
         except Exception as e:
             from uai.core.errors import UAIError
+            if debug:
+                from uai.cli.commands.ask import _print_debug_panel
+                _print_debug_panel(_debug_trace, _time.monotonic() - _t0, error=e)
             if isinstance(e, UAIError):
                 rprint(e.rich_format())
             else:
