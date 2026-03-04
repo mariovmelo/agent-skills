@@ -61,6 +61,7 @@ async def _ask(
 
     timing: dict = {}
     status = StreamStatus()
+    chosen_file_access: list[str] = ["readwrite"]  # mutable container to capture from callback
 
     def _resolve_model(decision) -> str:
         alias = decision.model
@@ -80,6 +81,7 @@ async def _ask(
         if event == "routing":
             decision, routing_s = args[0], args[1]
             timing["routing_s"] = routing_s
+            chosen_file_access[0] = getattr(decision, "file_access", "readwrite")
 
             backend = decision.backend.value.upper()   # "CLI" or "API"
             model_display = _resolve_model(decision)
@@ -92,7 +94,7 @@ async def _ask(
                     break
             long_ctx = " · long-ctx" if "[long-ctx]" in reason else ""
             free_tag = "  [green][free][/green]" if "[free]" in reason else ""
-            ro_tag = "  [yellow][ro][/yellow]" if getattr(decision, "access", "readwrite") == "readonly" else ""
+            ro_tag = "  [yellow][ro][/yellow]" if getattr(decision, "file_access", "readwrite") == "readonly" else ""
 
             # Use Text.from_markup — plain str is wrapped in Text(...) WITHOUT markup parsing
             status.spinner.text = Text.from_markup(
@@ -152,9 +154,12 @@ async def _ask(
         from uai.cli.edit_applier import parse_edit_plan, show_edit_plan, apply_edit_plan
         plan = parse_edit_plan(full_response)
         if not plan.is_empty:
-            if effective_edit_mode == "apply":
+            provider_is_readonly = chosen_file_access[0] == "readonly"
+            if effective_edit_mode == "apply" and not provider_is_readonly:
                 apply_edit_plan(plan, console, confirm=True)
             else:
+                if provider_is_readonly and effective_edit_mode == "apply":
+                    rprint("[yellow]  ⚠ Provedor em modo leitura (file_access: readonly) — modificações de arquivo bloqueadas.[/yellow]")
                 show_edit_plan(plan, console)
 
     except Exception as e:

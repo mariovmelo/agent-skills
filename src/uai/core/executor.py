@@ -79,8 +79,7 @@ class RequestExecutor:
         cfg = self._config.load()
         session = self._context.get_session(request.session_name)
 
-        # 1. Load and prepare history (routing decides access level, so we prepare
-        #    history first then save messages only if provider is not read-only)
+        # 1. Load and prepare history
         history: list[Message] | None = None
         history_tokens = 0
         if request.use_context:
@@ -97,11 +96,9 @@ class RequestExecutor:
             cfg=cfg,
         )
 
-        _readonly = (decision.access == "readonly")
-
-        # 3. Save user message now that we know the provider's access level
+        # 3. Save user message to context
         user_msg = None
-        if request.use_context and not _readonly:
+        if request.use_context:
             user_msg = self._context.add_user_message(session, request.prompt)
 
         # 4. Execute with fallback
@@ -112,7 +109,7 @@ class RequestExecutor:
         )
 
         # 5. Save assistant response and update user message with actual input token count
-        if request.use_context and not _readonly:
+        if request.use_context:
             # Replace the estimated token count on the user message with the actual
             # tokens_input reported by the API (covers prompt + history overhead).
             if user_msg and response.tokens_input and response.tokens_input > 0:
@@ -206,7 +203,6 @@ class RequestExecutor:
         except Exception:
             pass
 
-        # Save user message to context (deferred until we know provider access level)
         _user_msg_saved = False
 
         # Prepare history
@@ -241,9 +237,8 @@ class RequestExecutor:
         if on_status:
             on_status("routing", decision, _routing_s)
 
-        # Save user message now that we know the provider's access level
-        _readonly = (decision.access == "readonly")
-        if request.use_context and not _readonly:
+        # Save user message to context
+        if request.use_context:
             self._context.add_user_message(session, request.prompt)
             _user_msg_saved = True
 
@@ -274,7 +269,7 @@ class RequestExecutor:
                     tokens_output=self._context._estimate_tokens(full_text),
                     success=True,
                 ))
-                if request.use_context and full_text and not _readonly:
+                if request.use_context and full_text:
                     self._context.add_assistant_message(
                         session,
                         content=full_text,
@@ -302,7 +297,7 @@ class RequestExecutor:
                 if tokens_yielded > 0:
                     # Tokens were already sent to the user — can't retract them.
                     # Save whatever arrived and stop.
-                    if request.use_context and full_text and not _readonly:
+                    if request.use_context and full_text:
                         self._context.add_assistant_message(
                             session,
                             content=full_text,

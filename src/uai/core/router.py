@@ -80,7 +80,7 @@ class RoutingDecision:
     estimated_cost: float
     reason: str
     alternatives: list[str] = field(default_factory=list)
-    access: str = "readwrite"   # mirrors ProviderConfig.access for the chosen provider
+    file_access: str = "readwrite"   # mirrors ProviderConfig.file_access — "readonly" blocks writing files
 
 
 class NoProviderAvailableError(Exception):
@@ -211,7 +211,7 @@ class RouterEngine:
             estimated_cost=0.0,
             reason=self._explain(winner, task_type, free_only, prov_cls.is_free, smart),
             alternatives=alternatives,
-            access=prov_cfg.access,
+            file_access=prov_cfg.file_access,
         )
 
     # ──────────────────────────────────────────────────────────────────
@@ -317,7 +317,7 @@ class RouterEngine:
             task_type=task,
             estimated_cost=0.0,
             reason=f"Pinned by user to {name}",
-            access=prov_cfg.access,
+            file_access=prov_cfg.file_access,
         )
 
     def _score(

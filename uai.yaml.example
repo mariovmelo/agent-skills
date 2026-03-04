@@ -18,6 +18,7 @@ providers:
     default_model: flash    # flash | pro | flash-lite
     preferred_backend: cli  # CLI is free and preferred
     priority: 5
+    file_access: readwrite  # "readonly" = can only read files; "readwrite" = can suggest and apply changes
 
   qwen:
     enabled: true
@@ -39,6 +40,7 @@ providers:
     default_model: sonnet   # opus | sonnet | haiku
     preferred_backend: api
     priority: 2             # Paid — use only when needed
+    file_access: readwrite  # "readonly" | "readwrite" — readwrite allows applying suggested file changes
 
   codex:
     enabled: true

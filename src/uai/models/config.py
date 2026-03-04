@@ -11,7 +11,7 @@ class ProviderConfig(BaseModel):
     priority: int = 3                # 1-5; higher = preferred (when cost is equal)
     daily_limit: int | None = None
     cli_authenticated: bool = False  # True after `uai connect` OAuth is completed
-    access: str = "readwrite"        # "readonly" | "readwrite" — controls context persistence
+    file_access: str = "readwrite"   # "readonly" | "readwrite" — controls whether AI responses can write files on disk
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
