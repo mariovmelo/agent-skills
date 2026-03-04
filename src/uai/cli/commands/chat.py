@@ -50,11 +50,12 @@ def _make_on_status(status, timing: dict):
                     break
             long_ctx = " · long-ctx" if "[long-ctx]" in reason else ""
             free_tag = "  [green][free][/green]" if "[free]" in reason else ""
+            ro_tag = "  [yellow][ro][/yellow]" if getattr(decision, "access", "readwrite") == "readonly" else ""
 
             # Use Text.from_markup — plain str is wrapped in Text(...) WITHOUT markup parsing
             status.spinner.text = Text.from_markup(
                 f" → [cyan]{decision.provider} {backend}[/cyan] · {model_display}"
-                f"  [dim][{task_tag}{complexity}{long_ctx}][/dim]{free_tag}"
+                f"  [dim][{task_tag}{complexity}{long_ctx}][/dim]{free_tag}{ro_tag}"
             )
 
         elif event == "fallback":
@@ -210,6 +211,17 @@ async def _chat(
                 f" · total {total_s:.1f}s"
                 f" · ~{tokens_est} tokens[/dim]"
             )
+
+            # Handle diffs embedded in response
+            from uai.cli.edit_applier import parse_edit_plan, show_edit_plan, apply_edit_plan
+            plan = parse_edit_plan(full_text)
+            if not plan.is_empty:
+                edit_mode = executor.config.load().ux.edit_mode
+                if edit_mode == "apply":
+                    apply_edit_plan(plan, console, confirm=True)
+                else:
+                    show_edit_plan(plan, console)
+
         except Exception as e:
             from uai.core.errors import UAIError
             if isinstance(e, UAIError):

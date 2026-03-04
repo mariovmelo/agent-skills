@@ -11,6 +11,7 @@ class ProviderConfig(BaseModel):
     priority: int = 3                # 1-5; higher = preferred (when cost is equal)
     daily_limit: int | None = None
     cli_authenticated: bool = False  # True after `uai connect` OAuth is completed
+    access: str = "readwrite"        # "readonly" | "readwrite" — controls context persistence
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -58,6 +59,7 @@ class UXConfig(BaseModel):
     theme: str = "default"          # default | dark | minimal
     streaming: bool = True          # enable streaming responses
     spinner_style: str = "dots"     # dots | line | arc | bouncingBar
+    edit_mode: str = "show"         # "show" (display diffs) | "apply" (write to files)
 
 
 class SessionConfig(BaseModel):

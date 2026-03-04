@@ -17,9 +17,10 @@ def ask(
     no_context: bool = typer.Option(False, "--no-context", help="Ignore session history"),
     raw: bool = typer.Option(False, "--raw", help="Print raw text without markdown rendering"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show extra routing details"),
+    apply: bool = typer.Option(False, "--apply", help="Apply suggested file changes automatically"),
 ) -> None:
     """Ask a question. Routes intelligently across all configured AI providers."""
-    asyncio.run(_ask(prompt, provider, model, session, free, no_context, raw, verbose))
+    asyncio.run(_ask(prompt, provider, model, session, free, no_context, raw, verbose, apply))
 
 
 async def _ask(
@@ -31,6 +32,7 @@ async def _ask(
     no_context: bool,
     raw: bool,
     verbose: bool,
+    apply: bool = False,
 ) -> None:
     from uai.core.executor import RequestExecutor
     from uai.models.request import UAIRequest
@@ -90,11 +92,12 @@ async def _ask(
                     break
             long_ctx = " · long-ctx" if "[long-ctx]" in reason else ""
             free_tag = "  [green][free][/green]" if "[free]" in reason else ""
+            ro_tag = "  [yellow][ro][/yellow]" if getattr(decision, "access", "readwrite") == "readonly" else ""
 
             # Use Text.from_markup — plain str is wrapped in Text(...) WITHOUT markup parsing
             status.spinner.text = Text.from_markup(
                 f" → [cyan]{decision.provider} {backend}[/cyan] · {model_display}"
-                f"  [dim][{task_tag}{complexity}{long_ctx}][/dim]{free_tag}"
+                f"  [dim][{task_tag}{complexity}{long_ctx}][/dim]{free_tag}{ro_tag}"
             )
             if verbose and decision.alternatives:
                 status.lines.append(
@@ -114,14 +117,20 @@ async def _ask(
                 line += "[dim red] (sem mais provedores)[/dim red]"
             status.lines.append(line)
 
+    # Resolve effective edit mode: --apply flag overrides config
+    cfg_edit_mode = executor.config.load().ux.edit_mode
+    effective_edit_mode = "apply" if apply else cfg_edit_mode
+
     try:
+        full_response = ""
         if raw:
             # Raw mode: print tokens directly without markdown rendering
             async for token in executor.execute_stream(request, on_status=on_status):
                 typer.echo(token, nl=False)
+                full_response += token
             typer.echo()
         else:
-            await stream_to_live(
+            full_response = await stream_to_live(
                 executor.execute_stream(request, on_status=on_status),
                 console,
                 live_status=status,
@@ -138,6 +147,15 @@ async def _ask(
             f" · streaming {stream_s:.1f}s"
             f" · total {total_s:.1f}s[/dim]"
         )
+
+        # Handle diffs in the response
+        from uai.cli.edit_applier import parse_edit_plan, show_edit_plan, apply_edit_plan
+        plan = parse_edit_plan(full_response)
+        if not plan.is_empty:
+            if effective_edit_mode == "apply":
+                apply_edit_plan(plan, console, confirm=True)
+            else:
+                show_edit_plan(plan, console)
 
     except Exception as e:
         from uai.core.errors import UAIError

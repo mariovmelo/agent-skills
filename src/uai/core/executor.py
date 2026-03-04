@@ -79,19 +79,15 @@ class RequestExecutor:
         cfg = self._config.load()
         session = self._context.get_session(request.session_name)
 
-        # 1. Save the user message (initially with estimated token count)
-        user_msg = None
-        if request.use_context:
-            user_msg = self._context.add_user_message(session, request.prompt)
-
-        # 2. Load and prepare history (pass cfg to avoid re-loading)
+        # 1. Load and prepare history (routing decides access level, so we prepare
+        #    history first then save messages only if provider is not read-only)
         history: list[Message] | None = None
         history_tokens = 0
         if request.use_context:
             history = await self._prepare_history(session, request, cfg)
             history_tokens = sum(m.tokens or 0 for m in history) if history else 0
 
-        # 3. Route to best provider (pass cfg to avoid re-loading)
+        # 2. Route to best provider (pass cfg to avoid re-loading)
         decision = await self._router.route(
             prompt=request.prompt,
             task_type=request.task_type,
@@ -101,6 +97,13 @@ class RequestExecutor:
             cfg=cfg,
         )
 
+        _readonly = (decision.access == "readonly")
+
+        # 3. Save user message now that we know the provider's access level
+        user_msg = None
+        if request.use_context and not _readonly:
+            user_msg = self._context.add_user_message(session, request.prompt)
+
         # 4. Execute with fallback
         response, providers_tried = await self._fallback.execute(
             prompt=request.prompt,
@@ -109,10 +112,10 @@ class RequestExecutor:
         )
 
         # 5. Save assistant response and update user message with actual input token count
-        if request.use_context:
+        if request.use_context and not _readonly:
             # Replace the estimated token count on the user message with the actual
             # tokens_input reported by the API (covers prompt + history overhead).
-            if user_msg and response.tokens_input > 0:
+            if user_msg and response.tokens_input and response.tokens_input > 0:
                 self._context.update_message_tokens(session, user_msg.id, response.tokens_input)
             self._context.add_assistant_message(
                 session,
@@ -142,13 +145,18 @@ class RequestExecutor:
         )
 
     async def _prepare_history(
-        self, session, request: UAIRequest, cfg=None
+        self, session, request: UAIRequest, cfg=None, exclude_last: bool = False
     ) -> list[Message]:
-        """Get history messages, excluding the most recent user message (just added)."""
+        """Get history messages.
+
+        exclude_last=True when the caller already added the current user message to the
+        DB before calling this (so we strip it to avoid feeding it to the provider twice).
+        When exclude_last=False (default) the user message has NOT been saved yet — use
+        all existing messages as context.
+        """
         cfg = cfg or self._config.load()
         all_messages = self._context.get_messages(session)
-        # Exclude the last message (which we just added)
-        history = all_messages[:-1] if all_messages else []
+        history = all_messages[:-1] if (exclude_last and all_messages) else all_messages
         if not history:
             return []
 
@@ -198,9 +206,8 @@ class RequestExecutor:
         except Exception:
             pass
 
-        # Save user message to context
-        if request.use_context:
-            self._context.add_user_message(session, request.prompt)
+        # Save user message to context (deferred until we know provider access level)
+        _user_msg_saved = False
 
         # Prepare history
         history: list[Message] | None = None
@@ -234,6 +241,12 @@ class RequestExecutor:
         if on_status:
             on_status("routing", decision, _routing_s)
 
+        # Save user message now that we know the provider's access level
+        _readonly = (decision.access == "readonly")
+        if request.use_context and not _readonly:
+            self._context.add_user_message(session, request.prompt)
+            _user_msg_saved = True
+
         # Build fallback chain: primary first, then alternatives
         chain = [decision.provider] + decision.alternatives
         errors: dict[str, str] = {}
@@ -261,7 +274,7 @@ class RequestExecutor:
                     tokens_output=self._context._estimate_tokens(full_text),
                     success=True,
                 ))
-                if request.use_context and full_text:
+                if request.use_context and full_text and not _readonly:
                     self._context.add_assistant_message(
                         session,
                         content=full_text,
@@ -289,7 +302,7 @@ class RequestExecutor:
                 if tokens_yielded > 0:
                     # Tokens were already sent to the user — can't retract them.
                     # Save whatever arrived and stop.
-                    if request.use_context and full_text:
+                    if request.use_context and full_text and not _readonly:
                         self._context.add_assistant_message(
                             session,
                             content=full_text,

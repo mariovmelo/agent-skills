@@ -90,6 +90,7 @@ class ConfigManager:
             "UAI_DEFAULT_SESSION":   ["defaults", "session"],
             "UAI_THEME":             ["ux", "theme"],
             "UAI_STREAMING":         ["ux", "streaming"],
+            "UAI_EDIT_MODE":         ["ux", "edit_mode"],
             "UAI_TIMEOUT":           ["defaults", "timeout"],
         }
         overrides: dict = {}
