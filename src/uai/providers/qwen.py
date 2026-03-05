@@ -84,7 +84,7 @@ class QwenProvider(BaseProvider):
             )
             stderr_task = asyncio.create_task(_drain_stderr(proc.stderr))  # type: ignore[arg-type]
             try:
-                stdout, _ = await asyncio.wait_for(proc.stdout.read(), timeout=timeout)  # type: ignore[union-attr]
+                stdout = await asyncio.wait_for(proc.stdout.read(), timeout=timeout)  # type: ignore[union-attr]
                 stderr_task.cancel()
                 await proc.wait()
                 stderr = b"".join(stderr_chunks)
