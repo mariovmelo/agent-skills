@@ -63,20 +63,47 @@ class QwenProvider(BaseProvider):
         cmd = [get_cli_path("qwen"), "-p", full_prompt]
 
         t0 = time.monotonic()
+        stderr_chunks: list[bytes] = []
+
+        async def _drain_stderr(stream: asyncio.StreamReader) -> None:
+            """Continuously reads stderr into stderr_chunks."""
+            try:
+                while True:
+                    chunk = await stream.read(4096)
+                    if not chunk:
+                        break
+                    stderr_chunks.append(chunk)
+            except Exception:
+                pass
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
+            stderr_task = asyncio.create_task(_drain_stderr(proc.stderr))  # type: ignore[arg-type]
             try:
-                proc.kill()
+                stdout, _ = await asyncio.wait_for(proc.stdout.read(), timeout=timeout)  # type: ignore[union-attr]
+                stderr_task.cancel()
                 await proc.wait()
-            except Exception:
-                pass
-            raise ProviderError(f"Qwen CLI timed out after {timeout}s")
+                stderr = b"".join(stderr_chunks)
+            except asyncio.TimeoutError:
+                stderr_task.cancel()
+                try:
+                    proc.kill()
+                    await asyncio.wait_for(proc.wait(), timeout=2)
+                except Exception:
+                    pass
+                partial_stderr = b"".join(stderr_chunks)
+                hint = ""
+                if partial_stderr:
+                    decoded = partial_stderr.decode(errors="replace").strip()
+                    if decoded:
+                        hint = f" | stderr: {decoded[:300]}"
+                raise ProviderError(f"Qwen CLI timed out after {timeout}s{hint}")
+        except ProviderError:
+            raise
         except FileNotFoundError:
             raise ProviderError(
                 "Qwen CLI not found. Install: npm install -g @qwen/qwen-code  "
