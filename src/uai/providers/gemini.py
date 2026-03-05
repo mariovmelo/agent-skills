@@ -61,7 +61,7 @@ class GeminiProvider(BaseProvider):
         model_id = self._resolve(model)
         full_prompt = self._build_prompt(prompt, history)
 
-        cmd = [get_cli_path("gemini"), "-m", model_id, "-p", full_prompt]
+        cmd = [get_cli_path("gemini"), "-m", model_id, "-p", full_prompt, "--approval-mode=yolo"]
         if output_json:
             cmd += ["--output-format", "json"]
 

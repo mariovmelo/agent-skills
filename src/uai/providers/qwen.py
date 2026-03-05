@@ -60,7 +60,7 @@ class QwenProvider(BaseProvider):
     ) -> ProviderResponse:
         """Use qwen-code headless mode: qwen -p "prompt"."""
         full_prompt = self._build_prompt(prompt, history)
-        cmd = [get_cli_path("qwen"), "-p", full_prompt]
+        cmd = [get_cli_path("qwen"), "-p", full_prompt, "-y"]
 
         t0 = time.monotonic()
         stderr_chunks: list[bytes] = []
