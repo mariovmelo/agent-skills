@@ -79,6 +79,7 @@ class QwenProvider(BaseProvider):
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -182,18 +183,89 @@ class QwenProvider(BaseProvider):
         )
 
     # ------------------------------------------------------------------
+    async def _stream_cli(
+        self,
+        prompt: str,
+        history: list[Message] | None,
+        timeout: int = 120,
+    ):
+        """Read qwen CLI stdout incrementally, yielding chunks as they arrive."""
+        full_prompt = self._build_prompt(prompt, history)
+        cmd = [get_cli_path("qwen"), "-p", full_prompt, "-y"]
+        t0 = time.monotonic()
+        stderr_chunks: list[bytes] = []
+
+        async def _drain_stderr(s: asyncio.StreamReader) -> None:
+            try:
+                while chunk := await s.read(4096):
+                    stderr_chunks.append(chunk)
+            except Exception:
+                pass
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            raise ProviderError("Qwen CLI not found. Install: npm install -g @qwen-code/qwen-code")
+
+        stderr_task = asyncio.create_task(_drain_stderr(proc.stderr))  # type: ignore[arg-type]
+        try:
+            while True:
+                remaining = timeout - (time.monotonic() - t0)
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                try:
+                    chunk = await asyncio.wait_for(
+                        proc.stdout.read(512), timeout=remaining  # type: ignore[union-attr]
+                    )
+                except asyncio.TimeoutError:
+                    break
+                if not chunk:
+                    break
+                yield chunk.decode(errors="replace")
+        finally:
+            stderr_task.cancel()
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                    await asyncio.wait_for(proc.wait(), timeout=2)
+                except Exception:
+                    pass
+            else:
+                await proc.wait()
+
+        elapsed = time.monotonic() - t0
+        if proc.returncode is None or (elapsed >= timeout and proc.returncode != 0):
+            partial_stderr = b"".join(stderr_chunks)
+            hint = ""
+            if partial_stderr:
+                decoded = partial_stderr.decode(errors="replace").strip()
+                if decoded:
+                    hint = f" | stderr: {decoded[:300]}"
+            raise ProviderError(f"Qwen CLI timed out after {timeout}s{hint}")
+
+        if proc.returncode != 0:
+            err = b"".join(stderr_chunks).decode(errors="replace").strip()
+            if "rate" in err.lower() or "limit" in err.lower() or "quota" in err.lower():
+                raise RateLimitError(f"Qwen rate limit: {err}")
+            raise ProviderError(f"Qwen CLI error (exit {proc.returncode}): {err}")
+
+    # ------------------------------------------------------------------
     async def stream(
         self,
         prompt: str,
         history: list[Message] | None = None,
         model: str | None = None,
     ):
-        """Stream tokens via OpenRouter API. CLI fallback = single yield (subprocess)."""
+        """Stream tokens via OpenRouter API, or incrementally from CLI subprocess."""
         api_key = self._auth.get_credential("qwen", "openrouter_key")
         if not api_key:
-            # CLI path: cannot stream subprocess output incrementally
-            response = await self.send(prompt, history=history, model=model)
-            yield response.text
+            async for chunk in self._stream_cli(prompt, history):
+                yield chunk
             return
 
         try:

@@ -267,13 +267,14 @@ class RouterEngine:
     async def _call_free_llm(self, prompt: str) -> str | None:
         """Try gemini CLI then qwen CLI for a quick LLM call."""
         for cmd in (
-            ["gemini", "-m", "gemini-2.5-flash-preview-05-20", "-p", prompt],
-            ["qwen", "-p", prompt],
+            ["gemini", "-m", "gemini-2.5-flash-preview-05-20", "-p", prompt, "--approval-mode=yolo"],
+            ["qwen", "-p", prompt, "-y"],
         ):
             proc = None
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )

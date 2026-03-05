@@ -69,6 +69,7 @@ class GeminiProvider(BaseProvider):
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -192,6 +193,78 @@ class GeminiProvider(BaseProvider):
         return [{"alias": k, **v} for k, v in self.MODELS.items()]
 
     # ------------------------------------------------------------------
+    async def _stream_cli(
+        self,
+        prompt: str,
+        history: list[Message] | None,
+        model: str | None,
+        timeout: int = 120,
+    ):
+        """Read gemini CLI stdout incrementally, yielding chunks as they arrive."""
+        model_id = self._resolve(model)
+        full_prompt = self._build_prompt(prompt, history)
+        cmd = [get_cli_path("gemini"), "-m", model_id, "-p", full_prompt, "--approval-mode=yolo"]
+        t0 = time.monotonic()
+        stderr_chunks: list[bytes] = []
+
+        async def _drain_stderr(s: asyncio.StreamReader) -> None:
+            try:
+                while chunk := await s.read(4096):
+                    stderr_chunks.append(chunk)
+            except Exception:
+                pass
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            raise ProviderError("Gemini CLI not found. Run: npm install -g @google/gemini-cli")
+
+        stderr_task = asyncio.create_task(_drain_stderr(proc.stderr))  # type: ignore[arg-type]
+        try:
+            while True:
+                remaining = timeout - (time.monotonic() - t0)
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                try:
+                    chunk = await asyncio.wait_for(
+                        proc.stdout.read(512), timeout=remaining  # type: ignore[union-attr]
+                    )
+                except asyncio.TimeoutError:
+                    break
+                if not chunk:
+                    break
+                yield chunk.decode(errors="replace")
+        finally:
+            stderr_task.cancel()
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                    await asyncio.wait_for(proc.wait(), timeout=2)
+                except Exception:
+                    pass
+            else:
+                await proc.wait()
+
+        elapsed = time.monotonic() - t0
+        if proc.returncode is None or (elapsed >= timeout and proc.returncode != 0):
+            raise ProviderError(f"Gemini CLI timed out after {timeout}s")
+
+        if proc.returncode != 0:
+            err = b"".join(stderr_chunks).decode(errors="replace").strip()
+            err_lower = err.lower()
+            is_rate_limit = (
+                "resource_exhausted" in err_lower or "rate limit" in err_lower
+                or "quota exceeded" in err_lower or "429" in err_lower
+            )
+            if is_rate_limit:
+                raise RateLimitError(f"Gemini rate limit: {err}")
+            raise ProviderError(f"Gemini CLI error (exit {proc.returncode}): {err}")
+
     async def stream(
         self,
         prompt: str,
@@ -199,19 +272,14 @@ class GeminiProvider(BaseProvider):
         model: str | None = None,
     ):
         """Stream tokens from Gemini. Uses CLI (preferred) or API based on preferred_backend."""
-        # Respect preferred_backend — CLI is the default and needs no API key.
         if self.preferred_backend() == BackendType.CLI:
-            # CLI path: blocks until full response arrives, then yields as one chunk.
-            # Any ProviderError/TimeoutError raised here propagates to the caller,
-            # which handles fallback to alternative providers.
-            response = await self._send_cli(prompt, history, model, timeout=120, output_json=False)
-            yield response.text
+            async for chunk in self._stream_cli(prompt, history, model):
+                yield chunk
             return
         api_key = self._auth.get_credential("gemini", "api_key")
         if not api_key:
-            # No API key configured — fall back to CLI
-            response = await self._send_cli(prompt, history, model, timeout=120, output_json=False)
-            yield response.text
+            async for chunk in self._stream_cli(prompt, history, model):
+                yield chunk
             return
 
         try:
