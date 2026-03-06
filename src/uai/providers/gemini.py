@@ -88,15 +88,7 @@ class GeminiProvider(BaseProvider):
 
         if proc.returncode != 0:
             err = stderr.decode(errors="replace").strip()
-            err_lower = err.lower()
-            # Use specific phrases — "rate" alone matches "generate" in stack traces.
-            is_rate_limit = (
-                "resource_exhausted" in err_lower
-                or "rate limit" in err_lower
-                or "quota exceeded" in err_lower
-                or "429" in err_lower
-            )
-            if is_rate_limit:
+            if self.is_rate_limit_error(err):
                 raise RateLimitError(f"Gemini rate limit: {err}")
             raise ProviderError(f"Gemini CLI error (exit {proc.returncode}): {err}")
 
@@ -170,11 +162,39 @@ class GeminiProvider(BaseProvider):
     # ------------------------------------------------------------------
     async def health_check(self) -> ProviderStatus:
         from uai.utils.installer import is_cli_installed
+        
+        # Test CLI first
         if is_cli_installed("gemini"):
-            return ProviderStatus.AVAILABLE
+            try:
+                # Use a lightweight CLI command, e.g., asking for a short, simple prompt.
+                # Adding --approval-mode=yolo to avoid interactive prompts.
+                proc = await asyncio.create_subprocess_exec(
+                    get_cli_path("gemini"), "-m", "gemini-2.5-flash", "-p", "Hi", "--approval-mode=yolo",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+                if proc.returncode == 0:
+                    return ProviderStatus.AVAILABLE
+                # If CLI command fails, it might still be partially configured, so try API
+            except Exception:
+                pass  # Fallback to API check
+
+        # If CLI is not available or failed, try API key with a lightweight call
         api_key = self._auth.get_credential("gemini", "api_key")
         if api_key:
-            return ProviderStatus.AVAILABLE
+            try:
+                from google import genai
+                # Use a lightweight API call, e.g., listing models, to verify connectivity and key.
+                # No actual generation is performed, just metadata access.
+                client = genai.Client(api_key=api_key)
+                await asyncio.to_thread(client.models.list)
+                return ProviderStatus.AVAILABLE
+            except Exception:
+                # API key might be invalid or network issue, so it's degraded
+                return ProviderStatus.DEGRADED
+        
+        # Neither CLI nor API key is properly configured or working
         return ProviderStatus.NOT_CONFIGURED
 
     def is_configured(self) -> bool:
@@ -256,12 +276,7 @@ class GeminiProvider(BaseProvider):
 
         if proc.returncode != 0:
             err = b"".join(stderr_chunks).decode(errors="replace").strip()
-            err_lower = err.lower()
-            is_rate_limit = (
-                "resource_exhausted" in err_lower or "rate limit" in err_lower
-                or "quota exceeded" in err_lower or "429" in err_lower
-            )
-            if is_rate_limit:
+            if self.is_rate_limit_error(err):
                 raise RateLimitError(f"Gemini rate limit: {err}")
             raise ProviderError(f"Gemini CLI error (exit {proc.returncode}): {err}")
 
@@ -301,14 +316,53 @@ class GeminiProvider(BaseProvider):
         contents.append(types.Content(role="user", parts=[types.Part(text=prompt)]))
 
         try:
-            stream_iter = await asyncio.to_thread(
-                lambda: list(client.models.generate_content_stream(
-                    model=model_id, contents=contents
-                ))
-            )
-            for chunk in stream_iter:
-                if chunk.text:
-                    yield chunk.text
+            # Use async streaming properly — iterate in thread but yield chunks incrementally
+            import queue
+            chunk_queue: asyncio.Queue[str | None] = asyncio.Queue()
+            
+            def _consume_stream() -> None:
+                """Consume sync stream in background thread, push chunks to async queue."""
+                try:
+                    stream = client.models.generate_content_stream(
+                        model=model_id, contents=contents
+                    )
+                    for chunk in stream:
+                        if chunk.text:
+                            # Schedule put on event loop
+                            fut = asyncio.run_coroutine_threadsafe(
+                                chunk_queue.put(chunk.text),
+                                asyncio.get_running_loop()
+                            )
+                            # Wait for put to complete (with timeout to avoid deadlock)
+                            try:
+                                fut.result(timeout=5.0)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                finally:
+                    # Signal end of stream
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            chunk_queue.put(None),
+                            asyncio.get_running_loop()
+                        ).result(timeout=2.0)
+                    except Exception:
+                        pass
+            
+            # Start consuming in background thread
+            stream_task = asyncio.create_task(asyncio.to_thread(_consume_stream))
+            
+            # Yield chunks as they arrive
+            while True:
+                chunk = await chunk_queue.get()
+                if chunk is None:
+                    break
+                yield chunk
+            
+            # Wait for stream task to complete
+            await stream_task
+            
         except Exception:
             # Fallback to non-streaming on error
             response = await self._send_api(prompt, history, model, timeout=120, output_json=False)

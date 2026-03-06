@@ -119,6 +119,8 @@ class ClaudeProvider(APIProviderMixin):
         model_id = self._resolve_model_alias(model)
         cmd = [get_cli_path("claude"), "-p", full_prompt, "--model", model_id]
 
+        from uai.utils.memmon import snapshot, log_delta
+        _m0 = snapshot(f"claude_cli_before")
         t0 = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -140,8 +142,11 @@ class ClaudeProvider(APIProviderMixin):
             )
 
         latency = (time.monotonic() - t0) * 1000
+        log_delta(_m0, snapshot("claude_cli_after"), "claude_cli")
         if proc.returncode != 0:
             err = stderr.decode(errors="replace").strip()
+            if self.is_rate_limit_error(err):
+                raise RateLimitError(f"Claude rate limit: {err}")
             raise ProviderError(f"Claude CLI error (exit {proc.returncode}): {err}")
 
         text = stdout.decode(errors="replace").strip()
@@ -156,10 +161,42 @@ class ClaudeProvider(APIProviderMixin):
     # ------------------------------------------------------------------
     async def health_check(self) -> ProviderStatus:
         from uai.utils.installer import is_cli_installed
+        
+        # Test CLI first if installed
         if is_cli_installed("claude"):
-            return ProviderStatus.AVAILABLE
-        if self._auth.get_credential("claude", "api_key"):
-            return ProviderStatus.AVAILABLE
+            try:
+                # Use a lightweight CLI command to check functionality
+                proc = await asyncio.create_subprocess_exec(
+                    get_cli_path("claude"), "-p", "Hi", "--model", "haiku",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+                if proc.returncode == 0:
+                    return ProviderStatus.AVAILABLE
+            except Exception:
+                pass # Fallback to API check
+
+        # If CLI is not available or failed, try API key with a lightweight call
+        api_key = self._auth.get_credential("claude", "api_key")
+        if api_key:
+            try:
+                import anthropic
+                # Use a lightweight API call, e.g., listing models or a tiny message, to verify connectivity and key.
+                client = anthropic.AsyncAnthropic(api_key=api_key)
+                # A quick message create with minimal tokens
+                await asyncio.wait_for(
+                    client.messages.create(
+                        model="claude-3-haiku-20240307",
+                        max_tokens=1,
+                        messages=[{"role": "user", "content": "hi"}],
+                    ),
+                    timeout=5
+                )
+                return ProviderStatus.AVAILABLE
+            except Exception:
+                return ProviderStatus.DEGRADED
+        
         return ProviderStatus.NOT_CONFIGURED
 
     def is_configured(self) -> bool:
@@ -179,6 +216,62 @@ class ClaudeProvider(APIProviderMixin):
         return [{"alias": k, **v} for k, v in self.MODELS.items()]
 
     # ------------------------------------------------------------------
+    async def _stream_cli(
+        self,
+        prompt: str,
+        history: list[Message] | None,
+        model: str | None,
+        timeout: int = 120,
+    ):
+        """Stream tokens from Claude CLI incrementally via readline()."""
+        full_prompt = self._build_prompt(prompt, history)
+        model_id = self._resolve_model_alias(model)
+        cmd = [get_cli_path("claude"), "-p", full_prompt, "--model", model_id]
+        t0 = time.monotonic()
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            raise ProviderError(
+                "Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code"
+            )
+
+        try:
+            while True:
+                remaining = timeout - (time.monotonic() - t0)
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                try:
+                    line = await asyncio.wait_for(
+                        proc.stdout.readline(), timeout=remaining  # type: ignore[union-attr]
+                    )
+                except asyncio.TimeoutError:
+                    break
+                if not line:
+                    break
+                decoded = line.decode(errors="replace")
+                if decoded:
+                    yield decoded
+
+            await proc.wait()
+            if proc.returncode != 0:
+                stderr = await proc.stderr.read()  # type: ignore[union-attr]
+                raise ProviderError(f"Claude CLI error (exit {proc.returncode}): {stderr.decode()}")
+
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise ProviderError(f"Claude CLI timed out after {timeout}s")
+        except Exception:
+            if proc.returncode is None:
+                proc.kill()
+            raise
+
+    # ------------------------------------------------------------------
     async def stream(
         self,
         prompt: str,
@@ -188,17 +281,17 @@ class ClaudeProvider(APIProviderMixin):
         """Stream tokens. Uses CLI when installed (preferred), falls back to API streaming."""
         backend = self.preferred_backend()
 
-        # CLI backend: single yield (CLIs don't support streaming)
+        # CLI backend: incremental streaming via readline()
         if backend == BackendType.CLI:
-            response = await self._send_cli(prompt, history, model, timeout=120)
-            yield response.text
+            async for chunk in self._stream_cli(prompt, history, model):
+                yield chunk
             return
 
         # API backend: true streaming via Anthropic SDK
         api_key = self._auth.get_credential("claude", "api_key")
         if not api_key:
-            response = await self.send(prompt, history=history, model=model)
-            yield response.text
+            async for chunk in self._stream_cli(prompt, history, model):
+                yield chunk
             return
 
         try:

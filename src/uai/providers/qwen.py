@@ -4,6 +4,12 @@ import asyncio
 import time
 from typing import Any
 
+# How long to wait for the first byte from the CLI before giving up.
+# If the CLI hasn't produced any output in this window it is almost certainly
+# hanging (OAuth expired, network issue, etc.) and we should fail fast so the
+# fallback chain can try the next provider without a 120-second wait.
+_FIRST_BYTE_TIMEOUT = 15  # seconds
+
 from uai.models.context import Message
 from uai.models.provider import BackendType, ProviderStatus, TaskCapability
 from uai.providers.base import (
@@ -62,6 +68,8 @@ class QwenProvider(BaseProvider):
         full_prompt = self._build_prompt(prompt, history)
         cmd = [get_cli_path("qwen"), "-p", full_prompt, "-y"]
 
+        from uai.utils.memmon import snapshot, log_delta
+        _m0 = snapshot("qwen_cli_before")
         t0 = time.monotonic()
         stderr_chunks: list[bytes] = []
 
@@ -112,10 +120,11 @@ class QwenProvider(BaseProvider):
             )
 
         latency = (time.monotonic() - t0) * 1000
+        log_delta(_m0, snapshot("qwen_cli_after"), "qwen_cli")
 
         if proc.returncode != 0:
             err = stderr.decode(errors="replace").strip()
-            if "rate" in err.lower() or "limit" in err.lower() or "quota" in err.lower():
+            if self.is_rate_limit_error(err):
                 raise RateLimitError(f"Qwen rate limit: {err}")
             raise ProviderError(f"Qwen CLI error (exit {proc.returncode}): {err}")
 
@@ -192,7 +201,6 @@ class QwenProvider(BaseProvider):
         """Read qwen CLI stdout incrementally, yielding chunks as they arrive."""
         full_prompt = self._build_prompt(prompt, history)
         cmd = [get_cli_path("qwen"), "-p", full_prompt, "-y"]
-        t0 = time.monotonic()
         stderr_chunks: list[bytes] = []
 
         async def _drain_stderr(s: asyncio.StreamReader) -> None:
@@ -213,20 +221,31 @@ class QwenProvider(BaseProvider):
             raise ProviderError("Qwen CLI not found. Install: npm install -g @qwen-code/qwen-code")
 
         stderr_task = asyncio.create_task(_drain_stderr(proc.stderr))  # type: ignore[arg-type]
+        timed_out = False
+        first_byte_timeout_hit = False
         try:
-            while True:
-                remaining = timeout - (time.monotonic() - t0)
-                if remaining <= 0:
-                    raise asyncio.TimeoutError
-                try:
-                    chunk = await asyncio.wait_for(
-                        proc.stdout.read(512), timeout=remaining  # type: ignore[union-attr]
-                    )
-                except asyncio.TimeoutError:
-                    break
-                if not chunk:
-                    break
-                yield chunk.decode(errors="replace")
+            async with asyncio.timeout(timeout):
+                first_chunk = True
+                while True:
+                    if first_chunk:
+                        # Fail fast: if no output arrives within _FIRST_BYTE_TIMEOUT
+                        # the CLI is hanging (auth expired, network stall, etc.)
+                        try:
+                            chunk = await asyncio.wait_for(
+                                proc.stdout.read(32768),  # type: ignore[union-attr]
+                                timeout=_FIRST_BYTE_TIMEOUT,
+                            )
+                        except (TimeoutError, asyncio.TimeoutError):
+                            first_byte_timeout_hit = True
+                            break
+                        first_chunk = False
+                    else:
+                        chunk = await proc.stdout.read(32768)  # type: ignore[union-attr]
+                    if not chunk:
+                        break
+                    yield chunk.decode(errors="replace")
+        except TimeoutError:
+            timed_out = True
         finally:
             stderr_task.cancel()
             if proc.returncode is None:
@@ -238,8 +257,18 @@ class QwenProvider(BaseProvider):
             else:
                 await proc.wait()
 
-        elapsed = time.monotonic() - t0
-        if proc.returncode is None or (elapsed >= timeout and proc.returncode != 0):
+        if first_byte_timeout_hit:
+            partial_stderr = b"".join(stderr_chunks)
+            hint = ""
+            if partial_stderr:
+                decoded = partial_stderr.decode(errors="replace").strip()
+                if decoded:
+                    hint = f" | stderr: {decoded[:300]}"
+            raise ProviderError(
+                f"Qwen CLI produced no output within {_FIRST_BYTE_TIMEOUT}s{hint}"
+            )
+
+        if timed_out or proc.returncode is None:
             partial_stderr = b"".join(stderr_chunks)
             hint = ""
             if partial_stderr:
@@ -250,7 +279,7 @@ class QwenProvider(BaseProvider):
 
         if proc.returncode != 0:
             err = b"".join(stderr_chunks).decode(errors="replace").strip()
-            if "rate" in err.lower() or "limit" in err.lower() or "quota" in err.lower():
+            if self.is_rate_limit_error(err):
                 raise RateLimitError(f"Qwen rate limit: {err}")
             raise ProviderError(f"Qwen CLI error (exit {proc.returncode}): {err}")
 
@@ -299,10 +328,41 @@ class QwenProvider(BaseProvider):
     # ------------------------------------------------------------------
     async def health_check(self) -> ProviderStatus:
         from uai.utils.installer import is_cli_installed
+        
+        # Test CLI first if installed
         if is_cli_installed("qwen"):
-            return ProviderStatus.AVAILABLE
-        if self._auth.get_credential("qwen", "openrouter_key"):
-            return ProviderStatus.AVAILABLE
+            try:
+                # Use a lightweight CLI command to check functionality
+                proc = await asyncio.create_subprocess_exec(
+                    get_cli_path("qwen"), "-p", "Hi", "-y",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+                if proc.returncode == 0:
+                    return ProviderStatus.AVAILABLE
+            except Exception:
+                pass # Fallback to API check
+
+        # If CLI is not available or failed, try OpenRouter API key with a lightweight call
+        api_key = self._auth.get_credential("qwen", "openrouter_key")
+        if api_key:
+            try:
+                from openai import AsyncOpenAI
+                # Use a lightweight API call, e.g., a simple chat completion, to verify connectivity and key.
+                client = AsyncOpenAI(base_url=self.OPENROUTER_BASE, api_key=api_key)
+                await asyncio.wait_for(
+                    client.chat.completions.create(
+                        model="qwen/qwen3-coder",
+                        messages=[{"role": "user", "content": "hi"}],
+                        max_tokens=1
+                    ),
+                    timeout=5
+                )
+                return ProviderStatus.AVAILABLE
+            except Exception:
+                return ProviderStatus.DEGRADED
+        
         return ProviderStatus.NOT_CONFIGURED
 
     def is_configured(self) -> bool:
