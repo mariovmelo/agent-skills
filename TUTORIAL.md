@@ -15,11 +15,14 @@
    - [uai chat](#52-uai-chat--chat-interativo)
    - [uai code](#53-uai-code--tarefas-de-codigo)
    - [uai orchestrate](#54-uai-orchestrate--orquestracao-multi-ia)
-6. [Gerenciamento de sessoes](#6-gerenciamento-de-sessoes)
-7. [Configuracao avancada](#7-configuracao-avancada)
-8. [Monitoramento de uso e custo](#8-monitoramento-de-uso-e-custo)
-9. [Provedores disponiveis](#9-provedores-disponiveis)
-10. [Referencia rapida](#10-referencia-rapida)
+6. [Modo debug](#6-modo-debug)
+7. [Controle de acesso a arquivos](#7-controle-de-acesso-a-arquivos)
+8. [Gerenciamento de sessoes](#8-gerenciamento-de-sessoes)
+9. [Configuracao avancada](#9-configuracao-avancada)
+10. [Monitoramento de uso e custo](#10-monitoramento-de-uso-e-custo)
+11. [Provedores disponiveis](#11-provedores-disponiveis)
+12. [Empacotamento e publicacao](#12-empacotamento-e-publicacao)
+13. [Referencia rapida](#13-referencia-rapida)
 
 ---
 
@@ -342,6 +345,11 @@ Dentro do chat, digite normalmente para conversar. Para comandos especiais, use 
 | `/export [arquivo.md]` | — | Exporta a conversa para Markdown |
 | `/status` | — | Mostra status dos provedores em tempo real |
 | `/session` | — | Mostra a sessao atual e lista as disponiveis |
+| `/access <prov> readonly` | — | Bloqueia escrita de arquivos para um provedor |
+| `/access <prov> readwrite` | — | Permite escrita de arquivos para um provedor |
+| `/access all readonly` | — | Bloqueia escrita para TODOS os provedores |
+| `/access all readwrite` | — | Permite escrita para TODOS os provedores |
+| `/providers` | — | Lista provedores com coluna `file_access` |
 
 **Exemplo de sessao de chat:**
 
@@ -455,7 +463,139 @@ uai orchestrate -a "full security audit of the authentication module"
 
 ---
 
-## 6. Gerenciamento de sessoes
+## 6. Modo debug
+
+O flag `--debug` (ou `-d`) exibe um painel detalhado de execucao ao final de cada resposta, mostrando o roteamento, tentativas, fallbacks e erros com timestamps relativos.
+
+### Ativar em `uai ask`
+
+```bash
+uai ask "corrija esse bug" --debug
+uai ask -d "explique esse erro"
+```
+
+### Ativar em `uai chat`
+
+```bash
+uai chat --debug
+uai chat -d -s meu-projeto
+```
+
+No modo chat, o painel de debug aparece apos cada resposta. O cabecalho mostra a tag `[debug]` para indicar que o modo esta ativo.
+
+### Exemplo de saida do painel debug
+
+```
+╭──────────────── uai debug trace ────────────────╮
+│ +0.0s  ROUTING     qwen CLI · qwen3-coder  routing=1.2s  [code_generation]
+│                      alternatives: gemini, claude
+│ +1.2s  ATTEMPT     qwen  #1  via stream
+│ +73.7s FALLBACK    qwen failed
+│                      Qwen CLI timed out after 120s | stderr: Warning: ...
+│                      → trying gemini
+│ +73.7s ATTEMPT     gemini  #1  via stream
+│ +164s  DONE        OK  total=164.58s
+╰─────────────────────────────────────────────────╯
+```
+
+### Eventos exibidos
+
+| Evento | Descricao |
+|--------|-----------|
+| `ROUTING` | Qual provedor foi selecionado, modelo, backend (CLI/API), tipo de tarefa, e alternativas |
+| `ATTEMPT` | Inicio de tentativa em um provedor (numero da tentativa e modo: stream/sync) |
+| `RETRY` | Retry com backoff (inclui tempo de espera em segundos) |
+| `FALLBACK` | Falha em um provedor e redirecionamento para o proximo |
+| `BACKEND_SWITCH` | Degradacao graceful: API falhou, tentando CLI do mesmo provedor |
+| `DONE` | Conclusao com tempo total |
+| `ERROR` | Erro fatal quando todos os provedores falharam |
+
+### Dicas de uso
+
+```bash
+# Identificar por que um provedor esta falhando
+uai ask "teste" --debug 2>&1 | grep FALLBACK
+
+# Medir latencia de roteamento vs. resposta
+uai ask "hello" -d
+
+# Depurar sessao de chat em curso
+uai chat --debug --session debug-session
+```
+
+---
+
+## 7. Controle de acesso a arquivos
+
+O UAI permite controlar se os provedores podem ou nao escrever arquivos no seu sistema. Isso e util quando voce quer que o provedor apenas leia e sugira mudancas, sem aplicar edicoes automaticamente.
+
+### Dentro do `uai chat`
+
+Use os slash commands `/access` e `/providers`:
+
+```
+/access gemini readonly      # Bloqueia escrita para o Gemini
+/access claude readwrite     # Permite escrita para o Claude
+/access all readonly         # Bloqueia escrita para TODOS os provedores
+/access all readwrite        # Permite escrita para TODOS os provedores
+/providers                   # Lista provedores com coluna file_access
+/access                      # Mostra o status de acesso atual
+```
+
+**Exemplo de sessao protegida:**
+
+```
+uai> /access all readonly
+  gemini → readonly
+  qwen → readonly
+  claude → readonly
+  groq → readonly
+[dim] file_access set to readonly for all providers[/dim]
+
+uai> /providers
+Provider   Status       Backend   file_access
+─────────────────────────────────────────────
+gemini     available    CLI       readonly
+qwen       available    CLI       readonly
+claude     configured   API       readonly
+groq       available    API       readonly
+
+uai> Refatore o modulo auth.py para usar dataclasses
+[Gemini] Aqui estao as mudancas recomendadas... (apenas sugestao, sem edicao)
+```
+
+### Via configuracao permanente
+
+```bash
+# Bloquear escrita para um provedor de forma permanente
+uai config set providers.qwen.file_access readonly
+
+# Permitir escrita para um provedor
+uai config set providers.claude.file_access readwrite
+```
+
+Ou editando diretamente `~/.uai/config.yaml`:
+
+```yaml
+providers:
+  qwen:
+    file_access: readonly
+  claude:
+    file_access: readwrite
+```
+
+### Valores validos
+
+| Valor | Comportamento |
+|-------|---------------|
+| `readwrite` | Provedor pode ler e escrever arquivos (padrao) |
+| `readonly` | Provedor pode apenas ler; edicoes nao sao aplicadas automaticamente |
+
+> **Dica:** Use `/access all readonly` ao iniciar uma sessao de revisao de codigo para ter certeza que nenhum provedor vai editar arquivos sem sua confirmacao explicita.
+
+---
+
+## 8. Gerenciamento de sessoes
 
 O UAI armazena o historico de conversas em sessoes SQLite em `~/.uai/sessions/`.
 
@@ -503,7 +643,7 @@ uai sessions delete debug-api --yes
 
 ---
 
-## 7. Configuracao avancada
+## 9. Configuracao avancada
 
 ### Ver configuracao atual
 
@@ -597,7 +737,7 @@ Siga PEP 8 e use type hints.
 
 ---
 
-## 8. Monitoramento de uso e custo
+## 10. Monitoramento de uso e custo
 
 ### Ver uso e custo
 
@@ -639,7 +779,7 @@ uai providers detail claude
 
 ---
 
-## 9. Provedores disponiveis
+## 11. Provedores disponiveis
 
 | Provedor | Gratuito | Modelos | Contexto | Melhor para |
 |----------|----------|---------|----------|-------------|
@@ -663,7 +803,97 @@ uai providers detail claude
 
 ---
 
-## 10. Referencia rapida
+## 12. Empacotamento e publicacao
+
+O projeto usa [Hatchling](https://hatch.pypa.io/) como build backend e pode ser distribuido via PyPI.
+
+### Pre-requisitos
+
+```bash
+pip install build twine
+# ou, com Hatch:
+pip install hatch
+```
+
+### Construir a distribuicao
+
+```bash
+python -m build
+# gera: dist/uai-X.Y.Z.tar.gz  e  dist/uai-X.Y.Z-py3-none-any.whl
+```
+
+Com Hatch:
+
+```bash
+hatch build
+```
+
+### Publicar no PyPI
+
+```bash
+twine upload dist/*
+# vai solicitar usuario e token do PyPI
+```
+
+Com Hatch:
+
+```bash
+hatch publish
+# solicita token do PyPI interativamente
+```
+
+### Bumpar a versao antes de publicar
+
+Edite dois arquivos:
+
+**`pyproject.toml`:**
+
+```toml
+[project]
+version = "0.2.0"
+```
+
+**`src/uai/__init__.py`:**
+
+```python
+__version__ = "0.2.0"
+```
+
+### Instalar a partir do PyPI
+
+```bash
+pip install uai-cli
+```
+
+### Instalar em modo editavel (desenvolvimento)
+
+```bash
+git clone https://github.com/your-org/agent-skills
+cd agent-skills
+pip install -e .
+
+# Com dependencias de desenvolvimento:
+pip install -e ".[dev]"
+
+# Com suporte a privacidade (LGPD/GDPR via Presidio):
+pip install -e ".[privacy]"
+```
+
+### Adicionar um provider plugin via entry-point
+
+Qualquer pacote Python pode registrar um provedor customizado sem modificar o codigo do UAI:
+
+```toml
+# pyproject.toml do seu pacote plugin
+[project.entry-points."uai.providers"]
+myprovider = "mypkg.provider:MyProvider"
+```
+
+Apos instalar o plugin com `pip install mypkg`, o provedor aparece automaticamente em `uai providers list`.
+
+---
+
+## 13. Referencia rapida
 
 ```bash
 # ── Setup ──────────────────────────────────────────
@@ -679,11 +909,13 @@ uai ask --free "prompt"                  # Apenas gratuitos
 uai ask -s projeto "prompt"              # Sessao nomeada
 uai ask "analise @arquivo.py"            # Injetar arquivo
 uai ask "veja !git diff"                 # Injetar saida de comando
+uai ask --debug "prompt"                 # Painel de debug
 
 # ── Chat interativo ───────────────────────────────
 uai chat                                 # Abrir REPL
 uai chat -s projeto                      # Sessao nomeada
 uai chat --resume                        # Retomar ultima sessao
+uai chat --debug                         # Com painel de debug
 
 # ── Codigo ─────────────────────────────────────────
 uai code "implemente X"                  # Tarefa de codigo
@@ -717,6 +949,10 @@ uai providers detail <nome>              # Detalhes do provedor
 /export [arquivo.md]                     # Exportar sessao
 /status                                  # Status dos provedores
 /session                                 # Info da sessao
+/access all readonly                     # Bloquear escrita em todos
+/access all readwrite                    # Liberar escrita em todos
+/access <prov> readonly                  # Bloquear escrita em um provedor
+/providers                               # Listar com coluna file_access
 /exit                                    # Sair
 ```
 

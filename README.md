@@ -63,12 +63,14 @@ uai orchestrate "review the architecture of src/"
 | **Dual backend** | Each provider supports API (SDK) and CLI — CLI preferred when free |
 | **Persistent context** | SQLite sessions at `~/.uai/sessions/` — independent of provider context |
 | **Provider switching** | Change providers mid-conversation; history is reformatted and injected |
-| **Intelligent routing** | Task classification → scoring → best available provider |
+| **Intelligent routing** | 2-stage classification (keyword + LLM) → scoring → best available provider |
 | **Automatic fallback** | 3-layer resilience: retry → cross-provider failover → API→CLI degradation |
 | **Quota tracking** | Per-provider usage, cost (USD), alerts before hitting limits |
 | **Auto-install CLIs** | `uai setup --install` installs missing provider CLIs via npm/curl |
 | **Multi-AI teams** | 8 orchestration patterns: parallel analysis, cross-validation, etc. |
 | **Cost-zero default** | Free providers and free CLI backends are always tried first |
+| **Debug mode** | `--debug` / `-d` shows full trace: routing, attempts, errors, timings |
+| **File access control** | Per-provider `readonly`/`readwrite` via `/access` — bulk with `all` |
 
 ---
 
@@ -99,10 +101,12 @@ uai ask --provider gemini "..."    Force a specific provider
 uai ask --free "..."               Cost-zero providers only
 uai ask --new "..."                Ignore session context for this query
 uai ask --session myproject "..."  Use a named session
+uai ask --debug "..."              Show full provider trace (routing, errors, timings)
 
 uai chat                           Interactive REPL with persistent context
 uai chat --session myproject       Named session
 uai chat --provider claude         Force provider for the session
+uai chat --debug                   Show debug trace after every response
 
 uai code "task"                    Code-focused task (routes to code providers)
 uai orchestrate "task"             Multi-AI team orchestration
@@ -124,12 +128,19 @@ uai providers                      List providers with status
 Inside `uai chat`, use slash commands:
 
 ```
-/provider gemini     Switch provider (context is carried over)
-/history             Show conversation history
-/clear               Clear current session history
-/export              Export session to markdown
-/status              Show provider status
-/exit                Exit chat
+/provider gemini          Switch provider (context is carried over)
+/provider                 Return to automatic routing
+/history                  Show conversation history
+/clear                    Clear current session history
+/export [file.md]         Export session to markdown
+/status                   Show provider status
+/session                  Show current session and list available ones
+/access <prov> readonly   Block file writes for a provider
+/access <prov> readwrite  Allow file writes for a provider
+/access all readonly      Set readonly for ALL providers at once
+/access all readwrite     Set readwrite for ALL providers at once
+/providers                List providers with file_access column
+/exit                     Exit chat
 ```
 
 ---
@@ -256,6 +267,94 @@ Scoring (0-100): capability match (0-40) + cost bonus for free (0-30) + priority
 1. **Intra-provider retry**: 3 attempts with backoff (5s / 15s / 45s)
 2. **Cross-provider failover**: rate limit or auth error → next in fallback chain
 3. **Graceful degradation**: API fails → tries CLI backend of same provider
+
+---
+
+## Debug Mode
+
+Add `--debug` (or `-d`) to any `ask` or `chat` command to see a full execution trace:
+
+```bash
+uai ask "fix this bug" --debug
+uai chat --debug
+```
+
+The debug panel shows every event with relative timestamps:
+
+```
+╭──────────────── uai debug trace ────────────────╮
+│ +1.5s  ROUTING     qwen CLI · qwen3-coder  routing=1.5s
+│                      alternatives: gemini, claude
+│ +1.6s  ATTEMPT     qwen  #1  via stream
+│ +73.7s FALLBACK    qwen failed
+│                      Qwen CLI timed out after 120s | stderr: ...
+│                      → trying gemini
+│ +73.7s ATTEMPT     gemini  #1  via stream
+│ +164s  DONE        OK  total=164.58s
+╰─────────────────────────────────────────────────╯
+```
+
+---
+
+## File Access Control
+
+Control whether providers are allowed to write files:
+
+```bash
+# Inside uai chat:
+/access all readonly        # block writes for all providers
+/access all readwrite       # allow writes for all providers
+/access gemini readonly     # per-provider control
+```
+
+Or via config:
+
+```bash
+uai config set providers.qwen.file_access readonly
+```
+
+---
+
+## Packaging
+
+The project uses [Hatchling](https://hatch.pypa.io/) as its build backend.
+
+### Build a distribution
+
+```bash
+pip install build
+python -m build
+# produces dist/uai-X.Y.Z.tar.gz and dist/uai-X.Y.Z-py3-none-any.whl
+```
+
+### Publish to PyPI
+
+```bash
+pip install twine
+twine upload dist/*
+```
+
+Or with Hatch directly:
+
+```bash
+pip install hatch
+hatch build
+hatch publish          # prompts for PyPI token
+```
+
+### Bump version before publishing
+
+Edit `pyproject.toml` and `src/uai/__init__.py`:
+
+```toml
+# pyproject.toml
+version = "0.2.0"
+```
+
+```python
+# src/uai/__init__.py
+__version__ = "0.2.0"
+```
 
 ---
 
