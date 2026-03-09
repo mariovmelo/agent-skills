@@ -164,3 +164,40 @@ class QuotaTracker:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_provider_ts ON usage(provider, timestamp)")
+
+
+import asyncio
+import time
+
+class RateLimiter:
+    """Token bucket rate limiter for CLI requests."""
+    
+    def __init__(self, rate: float = 10.0, capacity: float = 20.0) -> None:
+        """
+        rate: tokens per second added to bucket
+        capacity: maximum tokens in bucket
+        """
+        self._rate = rate
+        self._capacity = capacity
+        self._tokens = capacity
+        self._last_update = time.monotonic()
+        self._lock = asyncio.Lock()
+    
+    async def acquire(self, tokens: int = 1) -> bool:
+        """Try to acquire tokens. Returns True if successful."""
+        async with self._lock:
+            now = time.monotonic()
+            elapsed = now - self._last_update
+            self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+            self._last_update = now
+            
+            if self._tokens >= tokens:
+                self._tokens -= tokens
+                return True
+            return False
+    
+    async def wait_for_token(self, tokens: int = 1) -> None:
+        """Wait until tokens are available."""
+        while not await self.acquire(tokens):
+            wait_time = (tokens - self._tokens) / self._rate
+            await asyncio.sleep(min(wait_time, 1.0))

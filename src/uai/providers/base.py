@@ -147,6 +147,21 @@ class BaseProvider(ABC):
         """Map a short alias ('flash', 'pro') to a full model ID."""
         return model_alias or ""
 
+    @staticmethod
+    def is_rate_limit_error(error_message: str, status_code: int | None = None) -> bool:
+        """Standardized check for rate limit errors across providers."""
+        lower_msg = error_message.lower()
+        if (
+            "rate limit" in lower_msg
+            or "resource exhausted" in lower_msg
+            or "quota exceeded" in lower_msg
+            or "429" in lower_msg  # HTTP 429 Too Many Requests
+        ):
+            return True
+        if status_code == 429:
+            return True
+        return False
+
 
 class APIProviderMixin(BaseProvider):
     """

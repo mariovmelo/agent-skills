@@ -9,8 +9,11 @@ Routing uses a two-stage classification pipeline:
 """
 from __future__ import annotations
 import asyncio
+import hashlib
 import json
 import re
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from uai.core.auth import AuthManager
@@ -21,6 +24,19 @@ from uai.models.provider import BackendType, ProviderStatus, TaskCapability
 from uai.providers import get_provider_class, list_providers
 from uai.utils.health import get_provider_status, mark_cooldown
 
+
+# Prefixes that indicate a conversational/preference question.
+# Prompts starting with these (or ending with '?') without explicit code markers
+# are classified as GENERAL_CHAT even if they contain code-adjacent verbs.
+_QUESTION_PREFIXES: tuple[str, ...] = (
+    "qual ", "quais ", "o que ", "como ", "quando ", "onde ",
+    "por que ", "por quê ", "você prefere", "gostaria ",
+    "what ", "which ", "how ", "when ", "where ", "why ", "who ", "should i ",
+)
+_TECHNICAL_MARKERS: tuple[str, ...] = (
+    "def ", "class ", "function ", "```", "import ", "error:", "traceback",
+    "erro:", "bug:", ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rs",
+)
 
 # Task-type keyword hints (order matters: first match wins)
 _TASK_KEYWORDS: list[tuple[TaskCapability, list[str]]] = [
@@ -62,6 +78,45 @@ Rules:
 - prefer_free: false for complex reasoning, security, or production-critical tasks"""
 
 
+class ClassificationCache:
+    """Cache para classificação de prompts com expiração por tempo (TTL).
+    
+    Reduz custos (100-200 tokens por chamada) e latência do classificador LLM.
+    """
+    
+    def __init__(self, max_size: int = 512, ttl_seconds: int = 300) -> None:
+        self._cache: OrderedDict[str, tuple[SmartClassification, float]] = OrderedDict()
+        self._max_size = max_size
+        self._ttl = ttl_seconds
+    
+    def _hash_prompt(self, prompt: str) -> str:
+        """Criar hash do prompt para usar como chave."""
+        return hashlib.sha256(prompt.encode()).hexdigest()[:32]
+    
+    def get(self, prompt: str) -> SmartClassification | None:
+        """Obter classificação cacheda se ainda válida."""
+        key = self._hash_prompt(prompt)
+        if key not in self._cache:
+            return None
+        
+        result, timestamp = self._cache[key]
+        if time.time() - timestamp > self._ttl:
+            del self._cache[key]
+            return None
+        
+        self._cache.move_to_end(key)
+        return result
+    
+    def set(self, prompt: str, classification: SmartClassification) -> None:
+        """Armazenar classificação no cache."""
+        key = self._hash_prompt(prompt)
+        
+        if len(self._cache) >= self._max_size:
+            self._cache.popitem(last=False)
+        
+        self._cache[key] = (classification, time.time())
+
+
 @dataclass
 class SmartClassification:
     """Result from the LLM-based classifier. All fields have safe defaults."""
@@ -97,6 +152,12 @@ class RouterEngine:
         self._config = config
         self._auth = auth
         self._quota = quota
+        
+        cfg = self._config.load()
+        self._classification_cache = ClassificationCache(
+            max_size=cfg.router.classification_cache_size,
+            ttl_seconds=cfg.router.classification_cache_ttl,
+        )
 
     async def route(
         self,
@@ -121,11 +182,11 @@ class RouterEngine:
         # Stage 1: fast keyword classification (always available)
         keyword_type = self._classify(prompt)
 
-        # Stage 2: launch LLM classifier in parallel with the rest of the routing logic
-        # We give it at most 1.5s; if it misses the window we use the keyword result.
+        # Stage 2: LLM classifier — skip when keyword matching already found a specific
+        # task type.  Running it only for GENERAL_CHAT saves ~2.5s on every code request.
         smart: SmartClassification | None = _smart  # caller may pre-supply result
-        if smart is None and task_type is None:
-            smart = await self._smart_classify(prompt)
+        if smart is None and task_type is None and keyword_type == TaskCapability.GENERAL_CHAT:
+            smart = await self._smart_classify(prompt, cfg)
 
         # Resolve final task_type
         if task_type is None:
@@ -218,20 +279,26 @@ class RouterEngine:
     # LLM-based smart classifier (Stage 2)
     # ──────────────────────────────────────────────────────────────────
 
-    async def _smart_classify(self, prompt: str) -> SmartClassification | None:
+    async def _smart_classify(self, prompt: str, cfg: ConfigSchema) -> SmartClassification | None:
         """
         Use a free LLM (Gemini Flash → Qwen fallback) to classify the prompt.
 
-        Runs with a 1.5s hard timeout. On any failure (timeout, parse error,
-        subprocess not installed) returns None — caller falls back to keywords.
+        Uses cache to avoid redundant LLM calls for similar prompts (saves 100-200 tokens/call).
+        Runs with a configurable hard timeout.
+        On any failure (timeout, parse error, subprocess not installed) returns None.
 
         Returns a SmartClassification with task_type, complexity, needs_long_context,
         and prefer_free signals. All fields default to safe values.
         """
+        # Verificar cache primeiro
+        cached = self._classification_cache.get(prompt)
+        if cached is not None:
+            return cached
+        
         classify_prompt = _CLASSIFY_PROMPT.format(prompt=prompt[:600])
         try:
             raw = await asyncio.wait_for(
-                self._call_free_llm(classify_prompt), timeout=1.5
+                self._call_free_llm(classify_prompt), timeout=cfg.router.smart_classifier_timeout
             )
         except (asyncio.TimeoutError, Exception):
             return None
@@ -255,19 +322,24 @@ class RouterEngine:
                     task_type = cap
                     break
 
-            return SmartClassification(
+            result = SmartClassification(
                 task_type=task_type,
                 complexity=str(data.get("complexity", "medium")).lower(),
                 needs_long_context=bool(data.get("needs_long_context", False)),
                 prefer_free=bool(data.get("prefer_free", True)),
             )
+            
+            # Armazenar no cache
+            self._classification_cache.set(prompt, result)
+            
+            return result
         except Exception:
             return None
 
     async def _call_free_llm(self, prompt: str) -> str | None:
         """Try gemini CLI then qwen CLI for a quick LLM call."""
         for cmd in (
-            ["gemini", "-m", "gemini-2.5-flash-preview-05-20", "-p", prompt, "--approval-mode=yolo"],
+            ["gemini", "-m", "gemini-2.5-flash", "-p", prompt, "--approval-mode=yolo"],
             ["qwen", "-p", prompt, "-y"],
         ):
             proc = None
@@ -278,7 +350,7 @@ class RouterEngine:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=1.4)
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=0.9)
                 if proc.returncode == 0:
                     return stdout.decode(errors="replace").strip()
             except asyncio.TimeoutError:
@@ -370,31 +442,35 @@ class RouterEngine:
         return score
 
     def _classify(self, prompt: str) -> TaskCapability:
-        lower = prompt.lower()
+        lower = prompt.lower().strip()
+
+        # Conversational/preference questions: don't misclassify as code tasks.
+        # e.g. "Qual dessas melhorias você gostaria que eu começasse a implementar agora?"
+        is_question = lower.endswith("?") or lower.startswith(_QUESTION_PREFIXES)
+        if is_question and not any(m in lower for m in _TECHNICAL_MARKERS):
+            return TaskCapability.GENERAL_CHAT
+
         for cap, keywords in _TASK_KEYWORDS:
             if any(kw in lower for kw in keywords):
                 return cap
         return TaskCapability.GENERAL_CHAT
 
     def _select_backend(self, cls, prov_cfg) -> BackendType:
-        """Mirror the logic in BaseProvider.preferred_backend(): CLI-first with API fallback."""
-        pref = getattr(prov_cfg, "preferred_backend", "cli")
-
-        # Explicit API preference — skip CLI detection
-        if pref == "api":
-            if BackendType.API in cls.supported_backends:
-                return BackendType.API
-            return cls.supported_backends[0] if cls.supported_backends else BackendType.API
-
-        # "cli" or "auto": prefer CLI when installed, fall back to API
-        if BackendType.CLI in cls.supported_backends:
-            from uai.utils.installer import is_cli_installed
-            if is_cli_installed(cls.name):
-                return BackendType.CLI
-            if BackendType.API in cls.supported_backends:
-                return BackendType.API
-
-        return cls.supported_backends[0] if cls.supported_backends else BackendType.API
+        """Delegate to provider's preferred_backend() — single source of truth.
+        
+        Avoids duplicating logic between router.py and base.py (DRY principle).
+        """
+        # Create temporary instance to call preferred_backend()
+        # Note: We pass minimal config since we only need backend selection
+        from uai.models.config import ProviderConfig
+        temp_cfg = ProviderConfig(
+            enabled=True,
+            priority=prov_cfg.priority,
+            default_model=prov_cfg.default_model,
+            preferred_backend=getattr(prov_cfg, "preferred_backend", "cli"),
+        )
+        provider_instance = cls(auth=self._auth, provider_cfg=temp_cfg)
+        return provider_instance.preferred_backend()
 
     def _explain(
         self,

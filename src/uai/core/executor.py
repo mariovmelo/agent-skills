@@ -18,7 +18,7 @@ from uai.core.auth import AuthManager
 from uai.core.config import ConfigManager
 from uai.core.context import ContextManager
 from uai.core.fallback import FallbackChain, AllProvidersFailedError
-from uai.core.quota import QuotaTracker
+from uai.core.quota import QuotaTracker, RateLimiter
 from uai.core.router import RouterEngine
 from uai.models.context import Message
 from uai.models.provider import BackendType
@@ -48,6 +48,12 @@ class RequestExecutor:
         self._fallback = fallback
         self._providers = providers
 
+        cfg = self._config.load()
+        self._rate_limiter = RateLimiter(
+            rate=cfg.router.rate_limiter_rate,
+            capacity=cfg.router.rate_limiter_capacity,
+        )
+
     @classmethod
     def create_default(cls, config_dir: Path | None = None) -> "RequestExecutor":
         """Build a fully wired RequestExecutor from scratch (normal usage)."""
@@ -76,6 +82,11 @@ class RequestExecutor:
 
     # ──────────────────────────────────────────────────────────────────
     async def execute(self, request: UAIRequest, on_status=None) -> UAIResponse:
+        from uai.utils.memmon import snapshot, log_delta
+        _m_exec = snapshot("execute_start")
+        # Respect rate limits
+        await self._rate_limiter.wait_for_token()
+
         cfg = self._config.load()
         session = self._context.get_session(request.session_name)
 
@@ -132,6 +143,7 @@ class RequestExecutor:
             )
             _task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
+        log_delta(_m_exec, snapshot("execute_end"), "execute_total")
         return UAIResponse(
             text=response.text,
             provider=response.provider,
@@ -184,6 +196,9 @@ class RequestExecutor:
 
     # ──────────────────────────────────────────────────────────────────
     async def execute_stream(self, request: UAIRequest, on_status=None):
+        # Respect rate limits for streaming requests
+        await self._rate_limiter.wait_for_token()
+
         """
         Like execute(), but yields tokens as they arrive via the provider's stream().
 
@@ -196,6 +211,8 @@ class RequestExecutor:
           "routing"  decision, routing_s        — decision made; routing_s = seconds taken
           "fallback" from_prov, error, to_prov  — provider failed, trying next
         """
+        from uai.utils.memmon import snapshot as _snap
+        _m_stream = _snap("stream_start")
         import time as _time
         cfg = self._config.load()
         session = self._context.get_session(request.session_name)
@@ -263,14 +280,15 @@ class RequestExecutor:
             if on_status:
                 on_status("attempt", provider_name, 1, "stream")
 
-            full_text = ""
+            chunks: list[str] = []
             tokens_yielded = 0
 
             try:
                 async for token in provider.stream(request.prompt, history=history):
-                    full_text += token
+                    chunks.append(token)
                     tokens_yielded += 1
                     yield token
+                full_text = "".join(chunks)
 
                 # Streaming completed successfully — record and save
                 self._quota.record(UsageRecord(
@@ -308,19 +326,24 @@ class RequestExecutor:
                 if tokens_yielded > 0:
                     # Tokens were already sent to the user — can't retract them.
                     # Save whatever arrived and stop.
-                    if request.use_context and full_text:
+                    partial = "".join(chunks)
+                    if request.use_context and partial:
                         self._context.add_assistant_message(
                             session,
-                            content=full_text,
+                            content=partial,
                             provider=provider.name,
                             model=decision.model or "",
-                            tokens=self._context._estimate_tokens(full_text),
+                            tokens=self._context._estimate_tokens(partial),
                         )
                     return
 
                 # No tokens yielded yet → safe to try the next provider in chain
                 if isinstance(e, RateLimitError):
                     self._quota.set_cooldown(provider_name, 300)
+                elif "timed out" in str(e).lower() or "no output within" in str(e).lower():
+                    # CLI is hanging/unresponsive — skip for 60s so subsequent
+                    # requests go straight to the fallback provider.
+                    self._quota.set_cooldown(provider_name, 60)
 
                 # Notify caller of fallback before continuing to next provider
                 next_prov = chain[i + 1] if i + 1 < len(chain) else None
@@ -329,6 +352,8 @@ class RequestExecutor:
                 continue
 
         # Every provider in the chain failed before yielding a single token
+        from uai.utils.memmon import snapshot as _snap2, log_delta as _ld2
+        _ld2(_m_stream, _snap2("stream_end_failed"), "stream_total_failed")
         raise AllProvidersFailedError(errors)
 
     # ──────────────────────────────────────────────────────────────────

@@ -32,7 +32,7 @@ class RoutingConfig(BaseModel):
     task_routing: dict[str, list[str]] = Field(
         default_factory=lambda: {
             "debugging":       ["codex", "claude", "gemini", "qwen"],
-            "code_generation": ["codex", "qwen", "claude", "gemini"],
+            "code_generation": ["codex", "claude", "qwen", "gemini"],
             "code_review":     ["qwen", "gemini", "claude"],
             "architecture":    ["gemini", "claude", "codex", "qwen"],
             "long_context":    ["gemini", "claude"],
@@ -68,6 +68,15 @@ class SessionConfig(BaseModel):
     project_isolation: bool = False
 
 
+class RouterConfig(BaseModel):
+    """Router-specific configuration."""
+    classification_cache_ttl: int = 300  # seconds
+    classification_cache_size: int = 512
+    smart_classifier_timeout: float = 2.5
+    rate_limiter_rate: float = 10.0      # tokens/sec to add to bucket
+    rate_limiter_capacity: float = 20.0  # max tokens in bucket
+
+
 # Backward-compat alias
 QuotaConfig = QuotaAlertConfig
 
@@ -90,3 +99,4 @@ class ConfigSchema(BaseModel):
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     quota: QuotaAlertConfig = Field(default_factory=QuotaAlertConfig)
+    router: RouterConfig = Field(default_factory=RouterConfig) # New router config

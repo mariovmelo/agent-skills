@@ -20,12 +20,16 @@ def quota() -> None:
     table.add_column("Provider", style="cyan", width=12)
     table.add_column("Today", width=10)
     table.add_column("Month", width=10)
+    table.add_column("Tokens Today", width=12)
+    table.add_column("Tokens Month", width=12)
     table.add_column("Cost (Month)", width=14)
     table.add_column("Daily Limit", width=12)
     table.add_column("Success 24h", width=12)
     table.add_column("Status", width=12)
 
     total_cost = 0.0
+    total_tokens_today = 0
+    total_tokens_month = 0
     for snap in snapshots:
         limit_str = str(snap.daily_limit) if snap.daily_limit else "∞"
 
@@ -46,12 +50,16 @@ def quota() -> None:
             snap.provider,
             str(snap.requests_today),
             str(snap.requests_month),
+            str(snap.tokens_today),
+            str(snap.tokens_month),
             cost_str,
             limit_str,
             success_str,
             status,
         )
         total_cost += snap.cost_month_usd
+        total_tokens_today += snap.tokens_today
+        total_tokens_month += snap.tokens_month
 
     console.print(table)
 
@@ -59,6 +67,9 @@ def quota() -> None:
         rprint(f"\n[bold]Total monthly cost: [yellow]${total_cost:.4f}[/yellow][/bold]")
     else:
         rprint(f"\n[bold]Total monthly cost: [green]$0.00 (all free)[/green][/bold]")
+
+    rprint(f"\n[bold]Total tokens today: [cyan]{total_tokens_today:,}[/cyan][/bold]")
+    rprint(f"[bold]Total tokens this month: [cyan]{total_tokens_month:,}[/cyan][/bold]")
 
     threshold = cfg.quota.alert_threshold_usd
     if total_cost >= threshold:

@@ -128,6 +128,7 @@ def _make_on_status(status, timing: dict, debug: bool = False, debug_trace: list
 
 
 def chat(
+    initial_prompt: str = typer.Argument(None, help="Optional first message (starts REPL after responding)"),
     session: str = typer.Option("default", "--session", "-s", help="Session name"),
     provider: str = typer.Option(None, "--provider", "-p", help="Force a specific provider"),
     free: bool = typer.Option(False, "--free", help="Use only free providers"),
@@ -138,10 +139,11 @@ def chat(
     """
     Start an interactive chat session with persistent context.
 
-    Your conversation is saved across sessions. Switch providers mid-chat
-    with /provider <name>. Type /help for all commands.
+    Optionally pass an initial message as argument. Your conversation is saved
+    across sessions. Switch providers mid-chat with /provider <name>. Type /help
+    for all commands.
     """
-    asyncio.run(_chat(session, provider, free, new, resume, debug))
+    asyncio.run(_chat(session, provider, free, new, resume, debug, initial_prompt))
 
 
 async def _chat(
@@ -151,6 +153,7 @@ async def _chat(
     new: bool,
     resume: bool,
     debug: bool = False,
+    initial_prompt: str | None = None,
 ) -> None:
     from uai.core.executor import RequestExecutor
     from uai.models.request import UAIRequest
@@ -196,13 +199,20 @@ async def _chat(
     history_path = executor.config.config_dir / "chat_history"
     pt_session = make_prompt_session(history_path, extra_commands=registry.all_names())
 
+    # Inject initial_prompt as the first user turn if provided
+    _pending_input: str | None = initial_prompt
+
     while True:
-        try:
-            provider_label = current_provider or "auto"
-            user_input = await get_user_input(pt_session, provider_label)
-        except (KeyboardInterrupt, EOFError):
-            rprint("\n[dim]Goodbye![/dim]")
-            break
+        if _pending_input is not None:
+            user_input = _pending_input
+            _pending_input = None
+        else:
+            try:
+                provider_label = current_provider or "auto"
+                user_input = await get_user_input(pt_session, provider_label)
+            except (KeyboardInterrupt, EOFError):
+                rprint("\n[dim]Goodbye![/dim]")
+                break
 
         if not user_input:
             continue

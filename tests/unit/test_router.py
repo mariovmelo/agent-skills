@@ -64,3 +64,61 @@ def test_classify_general_chat():
     from uai.core.router import RouterEngine
     router = RouterEngine.__new__(RouterEngine)
     assert router._classify("what is dependency injection?") == TaskCapability.GENERAL_CHAT
+
+
+@pytest.mark.asyncio
+async def test_classification_cache_hit_miss():
+    from uai.core.router import ClassificationCache, SmartClassification
+    
+    cache = ClassificationCache(max_size=10, ttl_seconds=60)
+    
+    # Miss inicial
+    assert cache.get("prompt1") is None
+    
+    # Set e get
+    classification = SmartClassification(task_type=TaskCapability.DEBUGGING)
+    cache.set("prompt1", classification)
+    assert cache.get("prompt1") == classification
+    
+    # Hit
+    assert cache.get("prompt1") == classification
+
+@pytest.mark.asyncio
+async def test_classification_cache_ttl():
+    from uai.core.router import ClassificationCache, SmartClassification
+    
+    cache = ClassificationCache(max_size=10, ttl_seconds=1)  # 1 segundo
+    classification = SmartClassification(task_type=TaskCapability.DEBUGGING)
+    cache.set("prompt_ttl", classification)
+    
+    # Assert before expiration
+    assert cache.get("prompt_ttl") == classification
+    
+    # Wait for expiration
+    import asyncio
+    await asyncio.sleep(1.1)
+    
+    # Assert after expiration
+    assert cache.get("prompt_ttl") is None
+
+@pytest.mark.asyncio
+async def test_classification_cache_lru_eviction():
+    from uai.core.router import ClassificationCache, SmartClassification
+    
+    cache = ClassificationCache(max_size=3, ttl_seconds=300)
+    
+    # Fill cache to its max size
+    for i in range(3):
+        cache.set(f"prompt{i}", SmartClassification(task_type=TaskCapability.DEBUGGING))
+    
+    # Access prompt0 to make it MRU
+    assert cache.get("prompt0") is not None
+    
+    # Add a new item, which should evict the LRU item (prompt1)
+    cache.set("prompt_new", SmartClassification(task_type=TaskCapability.DEBUGGING))
+    
+    # prompt1 should be evicted
+    assert cache.get("prompt1") is None
+    assert cache.get("prompt0") is not None # prompt0 was accessed, so not evicted
+    assert cache.get("prompt2") is not None # prompt2 was last added before prompt_new
+    assert cache.get("prompt_new") is not None

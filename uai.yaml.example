@@ -89,3 +89,11 @@ quota:
   alert_threshold_usd: 1.0
   # Alert when a provider reaches this % of its daily limit
   alert_threshold_percent: 80
+
+router:
+  classification_cache_ttl: 300      # 5 minutes
+  classification_cache_size: 512     # max entries
+  smart_classifier_timeout: 2.5      # seconds
+  rate_limiter_rate: 10.0            # tokens/sec to add to bucket (requests per second)
+  rate_limiter_capacity: 20.0        # max tokens in bucket (burst capacity)
+

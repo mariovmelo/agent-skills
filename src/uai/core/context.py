@@ -24,6 +24,7 @@ This allows switching providers mid-conversation without losing history.
 from __future__ import annotations
 import asyncio
 import json
+import logging
 import re
 import sqlite3
 import time
@@ -31,10 +32,31 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, TYPE_CHECKING
 
+_log = logging.getLogger("uai.context")
+
 from uai.models.context import Message, MessageRole, Session, SessionInfo
 
 if TYPE_CHECKING:
     from uai.providers.base import BaseProvider
+
+
+# ── Tiktoken cache ─────────────────────────────────────────────────────────────
+_tiktoken_encoder = None
+_tiktoken_tried = False
+
+
+def _get_tiktoken_encoder():
+    """Return a cached tiktoken encoder, or None if tiktoken is not installed."""
+    global _tiktoken_encoder, _tiktoken_tried
+    if _tiktoken_tried:
+        return _tiktoken_encoder
+    _tiktoken_tried = True
+    try:
+        import tiktoken
+        _tiktoken_encoder = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        _tiktoken_encoder = None
+    return _tiktoken_encoder
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -196,7 +218,7 @@ class ContextManager:
         model: str,
         tokens: int | None = None,
     ) -> Message:
-        token_count = tokens or self._estimate_tokens(content)
+        token_count = tokens or self._estimate_tokens(content, model=model)
         with self._connect(session.db_path) as conn:
             cur = conn.execute(
                 "INSERT INTO messages (role, content, provider, model, tokens) VALUES (?,?,?,?,?)",
@@ -408,7 +430,7 @@ class ContextManager:
             return []
 
         total_tokens = sum(
-            m.tokens if m.tokens is not None else self._estimate_tokens(m.content)
+            m.tokens if m.tokens is not None else self._estimate_tokens(m.content, model=m.model)
             for m in all_messages
         )
         provider_limit = target_provider.context_window_tokens
@@ -466,14 +488,14 @@ class ContextManager:
             for msg in recall_msgs:
                 if msg.id in window_ids:
                     continue  # already in window, skip
-                msg_tokens = msg.tokens if msg.tokens is not None else self._estimate_tokens(msg.content)
+                msg_tokens = msg.tokens if msg.tokens is not None else self._estimate_tokens(msg.content, model=msg.model)
                 if used_tokens + msg_tokens <= used_tokens + recall_budget:
                     result.append(msg)
                     used_tokens += msg_tokens
 
         # Layer 1: Adaptive window (most recent turns)
         window_tokens = sum(
-            m.tokens if m.tokens is not None else self._estimate_tokens(m.content)
+            m.tokens if m.tokens is not None else self._estimate_tokens(m.content, model=m.model)
             for m in window
         )
         remaining = budget - used_tokens
@@ -484,7 +506,7 @@ class ContextManager:
             trimmed = []
             acc = 0
             for msg in reversed(window):
-                t = msg.tokens if msg.tokens is not None else self._estimate_tokens(msg.content)
+                t = msg.tokens if msg.tokens is not None else self._estimate_tokens(msg.content, model=msg.model)
                 if acc + t <= remaining:
                     trimmed.append(msg)
                     acc += t
@@ -641,15 +663,24 @@ class ContextManager:
         Tries gemini-2.5-flash first, then qwen as fallback.
         Returns None on any failure.
         """
+        from uai.utils.memmon import snapshot, log_delta, is_memory_critical
+        if is_memory_critical():
+            _log.warning(
+                "[memmon] _call_lightweight_llm: skipping subprocess — system memory critical"
+            )
+            return None
+
         # Try gemini CLI first (free, no auth needed if installed)
         proc = None
         try:
+            _m0 = snapshot("lightweight_llm_gemini_before")
             proc = await asyncio.create_subprocess_exec(
                 "gemini", "-m", "gemini-2.5-flash-preview-05-20", "-p", prompt,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+            log_delta(_m0, snapshot("lightweight_llm_gemini_after"), "lightweight_llm_gemini")
             if proc.returncode == 0:
                 return stdout.decode(errors="replace").strip()
         except asyncio.TimeoutError:
@@ -662,15 +693,23 @@ class ContextManager:
         except Exception:
             pass
 
+        if is_memory_critical():
+            _log.warning(
+                "[memmon] _call_lightweight_llm: skipping qwen fallback — system memory critical"
+            )
+            return None
+
         # Try qwen CLI fallback
         proc = None
         try:
+            _m0 = snapshot("lightweight_llm_qwen_before")
             proc = await asyncio.create_subprocess_exec(
                 "qwen", "-p", prompt,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+            log_delta(_m0, snapshot("lightweight_llm_qwen_after"), "lightweight_llm_qwen")
             if proc.returncode == 0:
                 return stdout.decode(errors="replace").strip()
         except asyncio.TimeoutError:
@@ -706,8 +745,14 @@ class ContextManager:
                 result.append({"role": "model", "parts": [{"text": msg.content}]})
         return result
 
-    def _estimate_tokens(self, text: str) -> int:
-        """Fast approximation: ~4 chars per token."""
+    def _estimate_tokens(self, text: str, model: str | None = None) -> int:
+        """
+        Estimate tokens using tiktoken for greater accuracy, falling back to char-based.
+        The encoder is cached as a class variable after the first load.
+        """
+        enc = _get_tiktoken_encoder()
+        if enc is not None:
+            return len(enc.encode(text))
         return max(1, len(text) // 4)
 
     def _db_path(self, name: str) -> Path:
