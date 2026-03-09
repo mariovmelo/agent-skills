@@ -1,0 +1,99 @@
+# UAI - Unified AI CLI — Example Configuration
+# Copy to ~/.uai/config.yaml or run `uai setup` to generate automatically.
+
+version: 1
+
+defaults:
+  session: default          # Default session name
+  cost_mode: free_only      # free_only | balanced | performance
+  max_cost_per_request: 0.10
+  context_strategy: auto    # auto | full | windowed | summarized
+  context_window_turns: 20  # Used by the 'windowed' strategy
+  output_format: text       # text | json | markdown
+  timeout: 120
+
+providers:
+  gemini:
+    enabled: true
+    default_model: flash    # flash | pro | flash-lite
+    preferred_backend: cli  # CLI is free and preferred
+    priority: 5
+    file_access: readwrite  # "readonly" = can only read files; "readwrite" = can suggest and apply changes
+
+  qwen:
+    enabled: true
+    default_model: coder    # coder | coder-plus
+    preferred_backend: cli  # qwen-code OAuth is free (1000 req/day)
+    priority: 4
+    daily_limit: 1000       # qwen-code free tier
+
+  ollama:
+    enabled: true
+    default_model: qwen2.5-coder
+    preferred_backend: api  # Ollama exposes OpenAI-compatible API locally
+    priority: 5             # Local = free + private = highest priority
+    extra:
+      base_url: http://localhost:11434
+
+  claude:
+    enabled: true
+    default_model: sonnet   # opus | sonnet | haiku
+    preferred_backend: api
+    priority: 2             # Paid — use only when needed
+    file_access: readwrite  # "readonly" | "readwrite" — readwrite allows applying suggested file changes
+
+  codex:
+    enabled: true
+    default_model: codex
+    preferred_backend: cli  # codex exec CLI
+    priority: 2             # Paid
+
+  deepseek:
+    enabled: false          # Enable after: uai connect deepseek
+    default_model: coder
+    preferred_backend: api
+    priority: 3
+
+  groq:
+    enabled: false          # Enable after: uai connect groq
+    default_model: llama
+    preferred_backend: api
+    priority: 3
+
+routing:
+  # Fallback order when a provider fails or is unavailable
+  fallback_chain: [gemini, qwen, ollama, claude, codex]
+
+  # Per task-type routing — providers tried in listed order
+  task_routing:
+    debugging:        [codex, claude, gemini, qwen]
+    code_generation:  [codex, qwen, claude, gemini]
+    code_review:      [qwen, gemini, claude]
+    architecture:     [gemini, claude, codex, qwen]
+    long_context:     [gemini, claude]
+    general_chat:     [gemini, qwen, ollama, claude]
+    batch_processing: [qwen, gemini]
+    privacy_audit:    [qwen, gemini, claude]
+
+context:
+  # Provider used for auto-summarization of long histories (should be free)
+  summarize_with: gemini
+  summarize_model: flash
+  # Auto-summarize when history exceeds this many tokens
+  max_history_tokens: 50000
+  # Always keep this many most-recent turns intact (not summarized)
+  keep_recent_turns: 10
+
+quota:
+  # Alert when monthly cost exceeds this threshold (USD)
+  alert_threshold_usd: 1.0
+  # Alert when a provider reaches this % of its daily limit
+  alert_threshold_percent: 80
+
+router:
+  classification_cache_ttl: 300      # 5 minutes
+  classification_cache_size: 512     # max entries
+  smart_classifier_timeout: 2.5      # seconds
+  rate_limiter_rate: 10.0            # tokens/sec to add to bucket (requests per second)
+  rate_limiter_capacity: 20.0        # max tokens in bucket (burst capacity)
+
