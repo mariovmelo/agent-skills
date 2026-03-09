@@ -2,6 +2,9 @@
 
 > One tool. All AI providers. Persistent context. Intelligent routing. Zero lock-in.
 
+[![PyPI](https://img.shields.io/pypi/v/uai-cli)](https://pypi.org/project/uai-cli/)
+[![Python](https://img.shields.io/pypi/pyversions/uai-cli)](https://pypi.org/project/uai-cli/)
+
 `uai` is an installable Python CLI that integrates multiple AI providers (Claude, Gemini, Codex, Qwen, Ollama, DeepSeek, Groq) under a single interface. It manages credentials, routes requests intelligently, maintains its own persistent context (so you can switch providers mid-conversation), and never leaves you without a response thanks to automatic fallback.
 
 ---
@@ -12,10 +15,16 @@
 pip install uai-cli
 ```
 
+To pin a specific version:
+
+```bash
+pip install uai-cli==0.1.0
+```
+
 Or from source:
 
 ```bash
-git clone https://github.com/your-org/agent-skills
+git clone https://github.com/mariovmelo/agent-skills
 cd agent-skills
 pip install -e .
 ```
