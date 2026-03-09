@@ -398,6 +398,7 @@ Original orchestration skill documentation preserved in [`legacy/`](legacy/):
 ## Author
 
 **Diego Câmara** — [@diegocamara89](https://github.com/diegocamara89)
+**Mário Andrade** - [@mariovmelo](https://github.com/mariovmelo)
 
 ## License
 
