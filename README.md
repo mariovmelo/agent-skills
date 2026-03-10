@@ -2,38 +2,31 @@
 
 > One tool. All AI providers. Persistent context. Intelligent routing. Zero lock-in.
 
+[![PyPI](https://img.shields.io/pypi/v/uai-cli)](https://pypi.org/project/uai-cli/)
+[![Python](https://img.shields.io/pypi/pyversions/uai-cli)](https://pypi.org/project/uai-cli/)
+
 `uai` is an installable Python CLI that integrates multiple AI providers (Claude, Gemini, Codex, Qwen, Ollama, DeepSeek, Groq) under a single interface. It manages credentials, routes requests intelligently, maintains its own persistent context (so you can switch providers mid-conversation), and never leaves you without a response thanks to automatic fallback.
 
 ---
 
 ## Install
 
-The recommended way to install `uai` is via [`pipx`](https://pipx.pypa.io), which automatically adds the command to your PATH:
-
 ```bash
-pipx install uai-cli
+pip install uai-cli
 ```
 
-If you don't have `pipx`:
+To pin a specific version:
 
 ```bash
-# macOS
-brew install pipx
-pipx ensurepath
-
-# Linux / Windows (WSL)
-pip install pipx
-pipx ensurepath
+pip install uai-cli==0.1.0
 ```
-
-> **Avoid plain `pip install` for CLIs.** On macOS, pip installs binaries to `~/Library/Python/3.x/bin/` which is not in PATH by default, requiring manual PATH configuration.
 
 Or from source:
 
 ```bash
-git clone https://github.com/your-org/agent-skills
+git clone https://github.com/mariovmelo/agent-skills
 cd agent-skills
-pipx install -e .
+pip install -e .
 ```
 
 ---
@@ -414,6 +407,7 @@ Original orchestration skill documentation preserved in [`legacy/`](legacy/):
 ## Author
 
 **Diego Câmara** — [@diegocamara89](https://github.com/diegocamara89)
+**Mário Andrade** - [@mariovmelo](https://github.com/mariovmelo)
 
 ## License
 
