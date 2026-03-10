@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "uai"
+name = "uai-cli"
 version = "0.1.0"
 description = "UAI - Unified AI CLI: one tool for all AI providers with persistent context, intelligent routing and automatic fallback"
 readme = "README.md"
