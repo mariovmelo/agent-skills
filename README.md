@@ -8,16 +8,32 @@
 
 ## Install
 
+The recommended way to install `uai` is via [`pipx`](https://pipx.pypa.io), which automatically adds the command to your PATH:
+
 ```bash
-pip install uai-cli
+pipx install uai-cli
 ```
+
+If you don't have `pipx`:
+
+```bash
+# macOS
+brew install pipx
+pipx ensurepath
+
+# Linux / Windows (WSL)
+pip install pipx
+pipx ensurepath
+```
+
+> **Avoid plain `pip install` for CLIs.** On macOS, pip installs binaries to `~/Library/Python/3.x/bin/` which is not in PATH by default, requiring manual PATH configuration.
 
 Or from source:
 
 ```bash
 git clone https://github.com/your-org/agent-skills
 cd agent-skills
-pip install -e .
+pipx install -e .
 ```
 
 ---
